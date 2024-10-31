@@ -280,6 +280,7 @@ udev_input_enable(struct udev_input *input)
 	int devices_found = 0;
 
 	loop = wl_display_get_event_loop(c->wl_display);
+	// mmc:
 	fd = libinput_get_fd(input->libinput);
 	input->libinput_source =
 		wl_event_loop_add_fd(loop, fd, WL_EVENT_READABLE,
@@ -348,6 +349,7 @@ udev_input_init(struct udev_input *input, struct weston_compositor *c,
 
 	log_priority = getenv("WESTON_LIBINPUT_LOG_PRIORITY");
 
+	// mmc:
 	input->libinput = libinput_udev_create_context(&libinput_interface,
 						       input, udev);
 	if (!input->libinput) {
@@ -367,6 +369,8 @@ udev_input_init(struct udev_input *input, struct weston_compositor *c,
 	}
 
 	libinput_log_set_priority(input->libinput, priority);
+
+	libinput_setup_fork(input->libinput);
 
 	if (libinput_udev_assign_seat(input->libinput, seat_id) != 0) {
 		libinput_unref(input->libinput);
