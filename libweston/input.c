@@ -46,6 +46,7 @@
 #include "shared/timespec-util.h"
 #include <libweston/libweston.h>
 #include <libweston/desktop.h>
+#include <xkbcommon/xkbcommon.h>
 #include "backend.h"
 #include "libweston-internal.h"
 #include "relative-pointer-unstable-v1-server-protocol.h"
@@ -4125,9 +4126,19 @@ weston_compositor_build_global_keymap(struct weston_compositor *ec)
 	if (ec->xkb_info != NULL)
 		return 0;
 
-	keymap = xkb_keymap_new_from_names(ec->xkb_context,
-					   &ec->xkb_names,
-					   0);
+	FILE *file = fopen("/usr/share/X11/xkb/keymap/xkb.mmc","r");
+	if (file != NULL) {
+		keymap = xkb_keymap_new_from_file(ec->xkb_context,
+						  file,
+						  XKB_KEYMAP_FORMAT_TEXT_V1,
+						  XKB_KEYMAP_COMPILE_NO_FLAGS);
+		fclose(file);
+	} else {
+		keymap = xkb_keymap_new_from_names(ec->xkb_context,
+						   &ec->xkb_names,
+						   0);
+	}
+
 	if (keymap == NULL) {
 		weston_log("failed to compile global XKB keymap\n");
 		weston_log("  tried rules %s, model %s, layout %s, variant %s, "
