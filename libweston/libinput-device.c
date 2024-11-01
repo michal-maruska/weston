@@ -1002,6 +1002,7 @@ evdev_device_init_tablet(struct evdev_device *device,
 	notify_tablet_added(tablet);
 }
 
+// mmc:
 struct evdev_device *
 evdev_device_create(struct libinput_device *libinput_device,
 		    struct weston_seat *seat)

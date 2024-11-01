@@ -1944,6 +1944,7 @@ static const struct wl_pointer_listener pointer_listener = {
 	input_handle_axis_discrete,
 };
 
+// mmc:
 static void
 input_handle_keymap(void *data, struct wl_keyboard *keyboard, uint32_t format,
 		    int fd, uint32_t size)
@@ -1964,6 +1965,7 @@ input_handle_keymap(void *data, struct wl_keyboard *keyboard, uint32_t format,
 			goto error;
 		}
 
+		// mmc:
 		keymap = xkb_keymap_new_from_string(input->backend->compositor->xkb_context,
 						    map_str,
 						    XKB_KEYMAP_FORMAT_TEXT_V1,
