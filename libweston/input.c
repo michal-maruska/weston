@@ -2791,6 +2791,7 @@ notify_key(const struct weston_key_event *key_event)
 		grab = keyboard->grab;
 	}
 
+	// mmc:
 	grab->interface->key(grab, key_event);
 
 	if (keyboard->pending_keymap &&
@@ -4124,7 +4125,7 @@ weston_compositor_build_global_keymap(struct weston_compositor *ec)
 
 	if (ec->xkb_info != NULL)
 		return 0;
-
+	//mmc:
 #if 0
 	keymap = xkb_keymap_new_from_names(ec->xkb_context,
 					   &ec->xkb_names,
@@ -4170,6 +4171,7 @@ weston_seat_update_keymap(struct weston_seat *seat, struct xkb_keymap *keymap)
 		update_keymap(seat);
 }
 
+// NULL
 WL_EXPORT int
 weston_seat_init_keyboard(struct weston_seat *seat, struct xkb_keymap *keymap)
 {
@@ -4193,6 +4195,7 @@ weston_seat_init_keyboard(struct weston_seat *seat, struct xkb_keymap *keymap)
 		if (keyboard->xkb_info == NULL)
 			goto err;
 	} else {
+	  // mmc:
 		if (weston_compositor_build_global_keymap(seat->compositor) < 0)
 			goto err;
 		keyboard->xkb_info = seat->compositor->xkb_info;
