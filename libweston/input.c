@@ -45,6 +45,7 @@
 #include "shared/timespec-util.h"
 #include <libweston/libweston.h>
 #include <libweston/desktop.h>
+#include <xkbcommon/xkbcommon.h>
 #include "backend.h"
 #include "libweston-internal.h"
 #include "relative-pointer-unstable-v1-server-protocol.h"
