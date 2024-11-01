@@ -89,6 +89,7 @@ output_find_by_head_name(struct weston_compositor *compositor,
 	return NULL;
 }
 
+// mmc:
 static int
 device_added(struct udev_input *input, struct libinput_device *libinput_device)
 {
