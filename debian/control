@@ -62,7 +62,7 @@ Package: weston
 Architecture: linux-any
 Depends: ${misc:Depends},
          ${shlibs:Depends}
-Recommends: libgl1-mesa-dri
+Recommends: libgl1-mesa-dri, xwayland
 Suggests: wayland-utils
 Description: reference implementation of a wayland compositor
  Part of the Wayland project is also the Weston reference implementation
