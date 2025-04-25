@@ -7,6 +7,7 @@ weston (14.0.2-1) UNRELEASED; urgency=medium
       which tends to be outdated.
   * Drop patch included in upstream release.
   * Add debian/salsa-ci.yml.
+  * Standards-Version: 4.7.2 (no changes required)
 
  -- Dylan Aïssi <daissi@debian.org>  Fri, 25 Apr 2025 15:43:26 +0200
 
