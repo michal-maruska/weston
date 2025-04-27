@@ -4059,11 +4059,17 @@ weston_compositor_build_global_keymap(struct weston_compositor *ec)
 					   0);
 #else
 	FILE *file = fopen("/usr/share/X11/xkb/keymap/xkb.mmc","r");
-	keymap = xkb_keymap_new_from_file(ec->xkb_context,
-					  file,
-					  XKB_KEYMAP_FORMAT_TEXT_V1,
-					  XKB_KEYMAP_COMPILE_NO_FLAGS);
-	fclose(file);
+	if (file != NULL) {
+	  keymap = xkb_keymap_new_from_file(ec->xkb_context,
+					    file,
+					    XKB_KEYMAP_FORMAT_TEXT_V1,
+					    XKB_KEYMAP_COMPILE_NO_FLAGS);
+	  fclose(file);
+	} else {
+	  keymap = xkb_keymap_new_from_names(ec->xkb_context,
+					     &ec->xkb_names,
+					     0);
+	}
 #endif
 	if (keymap == NULL) {
 		weston_log("failed to compile global XKB keymap\n");
