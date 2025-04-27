@@ -1,3 +1,12 @@
+weston (14.0.2-1-maruska) unstable; urgency=medium
+
+  * call the new libinput_setup_fork()
+  * use my own xkb definition file.
+  * exploratory marks, comments
+  * needed header?
+
+ -- Michal Maruska <mmaruska@gmail.com>  Sun, 27 Apr 2025 14:53:08 +0200
+
 weston (14.0.2-1) unstable; urgency=medium
 
   * New upstream release.
