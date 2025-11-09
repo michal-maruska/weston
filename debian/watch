@@ -1,4 +1,4 @@
 Version: 5
 
-Template: Gitlab
+Template: GitLab
 Dist: https://gitlab.freedesktop.org/wayland/weston
