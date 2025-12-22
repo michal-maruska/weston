@@ -18,7 +18,6 @@ override_dh_auto_configure:
 	dh_auto_configure -- \
 	        -Dbackend-rdp=true \
 	        -Dbackend-vnc=$(BACKEND_VNC) \
-	        -Dscreenshare=true \
 		-Dsystemd=true \
 		$(CONFIGURE_FLAGS)
 
