@@ -10,6 +10,7 @@ usr/lib/*/weston/kiosk-shell.so
 usr/lib/*/weston/libexec_weston.so*
 usr/lib/*/weston/lua-shell.so
 usr/lib/*/weston/systemd-notify.so
+usr/libexec/shell.lua
 usr/libexec/weston-desktop-shell
 usr/libexec/weston-ivi-shell-user-interface
 usr/libexec/weston-keyboard
