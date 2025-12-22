@@ -2,6 +2,7 @@ weston (14.0.91-1) UNRELEASED; urgency=medium
 
   * New upstream release (alpha release for 15.0.0)
   * Bump SONAME to libweston-15-0
+  * Update symbols file
   * Drop patches included in upstream release
   * Disable deprecated screenshare option
   * Don't install fullscreen-shell and screen-share because deprecated
