@@ -27,14 +27,6 @@
 #ifndef RDP_H
 #define RDP_H
 
-/* Workaround an issue with clang and freerdp 3 headers. Another
- * option would be to build with --std=c11 but weston itself isn't
- * quite ready for that
- */
-#if USE_FREERDP_VERSION >= 3 && defined(__clang__)
-#pragma clang diagnostic ignored "-Wtypedef-redefinition"
-#endif
-
 #include <freerdp/version.h>
 
 #include <freerdp/freerdp.h>
@@ -55,6 +47,7 @@
 #include <winpr/string.h>
 
 #include "backend.h"
+#include "libweston-internal.h"
 
 #include "shared/helpers.h"
 #include "shared/string-helpers.h"
@@ -145,12 +138,17 @@ struct rdp_head {
 	rdpMonitor config;
 };
 
+struct rdp_buffer {
+	struct rdp_output *output;
+	pixman_image_t *shadow_surface;
+	weston_renderbuffer_t rb;
+};
+
 struct rdp_output {
 	struct weston_output base;
 	struct rdp_backend *backend;
 	struct wl_event_source *finish_frame_timer;
-	struct weston_renderbuffer *renderbuffer;
-	pixman_image_t *shadow_surface;
+	struct rdp_buffer *buffer;
 };
 
 struct rdp_peer_context {

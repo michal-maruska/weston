@@ -26,7 +26,6 @@
 #include "config.h"
 
 #include <string.h>
-#include <assert.h>
 #include <libudev.h>
 #include <unistd.h>
 #include <sys/file.h>
@@ -40,6 +39,7 @@
 #include "shared/helpers.h"
 #include "shared/string-helpers.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
 #include "weston.h"
 #include "test-config.h"
 
@@ -62,12 +62,12 @@ prog_args_init(struct prog_args *p)
 static void
 prog_args_take(struct prog_args *p, char *arg)
 {
-	assert(arg);
+	test_assert_ptr_not_null(arg);
 
 	if (p->argc == p->alloc) {
 		p->alloc += 10;
 		p->argv = realloc(p->argv, sizeof(char *) * p->alloc);
-		assert(p->argv);
+		test_assert_ptr_not_null(p->argv);
 	}
 
 	p->argv[p->argc++] = arg;
@@ -80,10 +80,10 @@ prog_args_take(struct prog_args *p, char *arg)
 static void
 prog_args_save(struct prog_args *p)
 {
-	assert(p->saved == NULL);
+	test_assert_ptr_null(p->saved);
 
 	p->saved = calloc(p->argc, sizeof(char *));
-	assert(p->saved);
+	test_assert_true(p->saved);
 
 	memcpy(p->saved, p->argv, sizeof(char *) * p->argc);
 }
@@ -108,6 +108,7 @@ prog_args_fini(struct prog_args *p)
 	prog_args_init(p);
 }
 
+#ifdef BUILD_DRM_COMPOSITOR
 static char *
 get_lock_path(void)
 {
@@ -173,6 +174,7 @@ err_open:
 err_path:
 	return -1;
 }
+#endif
 
 /** Initialize part of compositor setup
  *
@@ -214,7 +216,7 @@ backend_to_str(enum weston_compositor_backend b)
 		[WESTON_BACKEND_WAYLAND] = "wayland",
 		[WESTON_BACKEND_X11] = "x11",
 	};
-	assert(b >= 0 && b < ARRAY_LENGTH(names));
+	test_assert_true(b >= 0 && b < ARRAY_LENGTH(names));
 	return names[b];
 }
 
@@ -225,8 +227,9 @@ renderer_to_str(enum weston_renderer_type t)
 		[WESTON_RENDERER_NOOP] = "noop",
 		[WESTON_RENDERER_PIXMAN] = "pixman",
 		[WESTON_RENDERER_GL] = "gl",
+		[WESTON_RENDERER_VULKAN] = "vulkan",
 	};
-	assert(t >= 0 && t <= ARRAY_LENGTH(names));
+	test_assert_true(t >= 0 && t <= ARRAY_LENGTH(names));
 	return names[t];
 }
 
@@ -239,8 +242,9 @@ shell_to_str(enum shell_type t)
 		[SHELL_FULLSCREEN] = "fullscreen",
 		[SHELL_IVI] = "ivi",
 		[SHELL_KIOSK] = "kiosk",
+		[SHELL_LUA] = "lua",
 	};
-	assert(t >= 0 && t < ARRAY_LENGTH(names));
+	test_assert_true(t >= 0 && t < ARRAY_LENGTH(names));
 	return names[t];
 }
 
@@ -258,7 +262,7 @@ transform_to_str(enum wl_output_transform t)
 		[WL_OUTPUT_TRANSFORM_FLIPPED_270] = "flipped-rotate-270",
 	};
 
-	assert(t < ARRAY_LENGTH(names) && names[t]);
+	test_assert_true(t < ARRAY_LENGTH(names) && names[t]);
 	return names[t];
 }
 
@@ -278,7 +282,9 @@ execute_compositor(const struct compositor_setup *setup,
 	struct weston_testsuite_data test_data;
 	struct prog_args args;
 	char *tmp;
+#ifdef BUILD_DRM_COMPOSITOR
 	const char *drm_device;
+#endif
 	int lock_fd = -1;
 	int ret = RESULT_OK;
 
@@ -410,6 +416,13 @@ execute_compositor(const struct compositor_setup *setup,
 	}
 #endif
 
+#ifndef ENABLE_VULKAN
+	if (setup->renderer == WESTON_RENDERER_VULKAN) {
+		fprintf(stderr, "Vulkan renderer required but not built, skipping.\n");
+		ret = RESULT_SKIP;
+	}
+#endif
+
 	test_data.test_quirks = setup->test_quirks;
 	test_data.test_private_data = data;
 	prog_args_save(&args);
@@ -432,11 +445,11 @@ write_cfg(va_list entry_list, FILE *weston_ini)
 {
 	char *entry = va_arg(entry_list, char *);
 	int ret;
-	assert(entry);
+	test_assert_ptr_not_null(entry);
 
 	while (entry) {
 		ret = fprintf(weston_ini, "%s\n", entry);
-		assert(ret >= 0);
+		test_assert_int_ge(ret, 0);
 		free(entry);
 		entry = va_arg(entry_list, char *);
 	}
@@ -448,10 +461,10 @@ open_ini_file(struct compositor_setup *setup)
 	char *wd, *tmp_path = NULL;
 	FILE *weston_ini = NULL;
 
-	assert(!setup->config_file);
+	test_assert_ptr_null(setup->config_file);
 
 	wd = realpath(".", NULL);
-	assert(wd);
+	test_assert_ptr_not_null(wd);
 
 	str_printf(&tmp_path, "%s/%s.ini", wd, setup->testset_name);
 	if (!tmp_path) {
@@ -460,7 +473,7 @@ open_ini_file(struct compositor_setup *setup)
 	}
 
 	weston_ini = fopen(tmp_path, "w");
-	assert(weston_ini);
+	test_assert_ptr_not_null(weston_ini);
 	setup->config_file = tmp_path;
 
 out:
@@ -476,14 +489,14 @@ weston_ini_setup_(struct compositor_setup *setup, ...)
 	va_list entry_list;
 
 	weston_ini = open_ini_file(setup);
-	assert(weston_ini);
+	test_assert_ptr_not_null(weston_ini);
 
 	va_start(entry_list, setup);
 	write_cfg(entry_list, weston_ini);
 	va_end(entry_list);
 
 	ret = fclose(weston_ini);
-	assert(ret != EOF);
+	test_assert_int_ne(ret, EOF);
 }
 
 char *
@@ -495,7 +508,7 @@ cfgln(const char *fmt, ...)
 
 	va_start(ap, fmt);
 	ret = vasprintf(&str, fmt, ap);
-	assert(ret >= 0);
+	test_assert_int_ge(ret, 0);
 	va_end(ap);
 
 	return str;

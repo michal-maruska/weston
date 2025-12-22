@@ -32,6 +32,7 @@
 #include "shared/timespec-util.h"
 #include "weston-test-client-helper.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
 
 struct setup_args {
 	struct fixture_metadata meta;
@@ -46,6 +47,10 @@ static const struct setup_args my_setup_args[] = {
 	{
 		.renderer = WESTON_RENDERER_GL,
 		.meta.name = "GL"
+	},
+	{
+		.renderer = WESTON_RENDERER_VULKAN,
+		.meta.name = "Vulkan"
 	},
 };
 
@@ -87,13 +92,12 @@ surface_commit_color(struct client *client, struct surface *surface,
 {
 	struct buffer *buf;
 
-	buf = create_shm_buffer_a8r8g8b8(client, width, height);
-	fill_image_with_color(buf->image, color);
+	buf = create_shm_buffer_solid(client, width, height, color);
 	wl_surface_attach(surface->wl_surface, buf->proxy, 0, 0);
 	wl_surface_damage(surface->wl_surface, 0, 0, width, height);
 	wl_surface_commit(surface->wl_surface);
 
-	assert(!surface->buffer);
+	test_assert_ptr_null(surface->buffer);
 	surface->buffer = buf;
 
 	return buf;
@@ -140,8 +144,7 @@ TEST(pointer_cursor_retains_committed_buffer_after_reenter)
 
 	/* Set up the main surface. */
 	client->surface = main_surface;
-	client->surface->buffer = create_shm_buffer_a8r8g8b8(client, 100, 100);
-	fill_image_with_color(client->surface->buffer->image, &red);
+	client->surface->buffer = create_shm_buffer_solid(client, 100, 100, &red);
 	move_client_frame_sync(client, 50, 50);
 
 	/* Move the pointer into the main surface. */
@@ -150,8 +153,8 @@ TEST(pointer_cursor_retains_committed_buffer_after_reenter)
 			      client->input->pointer->serial,
 			      main_cursor_surface->wl_surface, 0, 0);
 	match = verify_screen_content(client, "pointer_cursor_reenter", 0,
-				      NULL, 0, NULL);
-	assert(match);
+				      NULL, 0, NULL, NO_DECORATIONS);
+	test_assert_true(match);
 
 	/* Move the cursor just outside the main surface. */
 	send_motion(client, &t2, 150, 150);
@@ -159,8 +162,8 @@ TEST(pointer_cursor_retains_committed_buffer_after_reenter)
 			      client->input->pointer->serial,
 			      back_cursor_surface->wl_surface, 0, 0);
 	match = verify_screen_content(client, "pointer_cursor_reenter", 1,
-				      NULL, 1, NULL);
-	assert(match);
+				      NULL, 1, NULL, NO_DECORATIONS);
+	test_assert_true(match);
 
 	/* And back in the main surface again. */
 	send_motion(client, &t3, 149, 149);
@@ -168,12 +171,14 @@ TEST(pointer_cursor_retains_committed_buffer_after_reenter)
 			      client->input->pointer->serial,
 			      main_cursor_surface->wl_surface, 0, 0);
 	match = verify_screen_content(client, "pointer_cursor_reenter", 2,
-				      NULL, 2, NULL);
-	assert(match);
+				      NULL, 2, NULL, NO_DECORATIONS);
+	test_assert_true(match);
 
 	surface_destroy(back_cursor_surface);
 	surface_destroy(main_cursor_surface);
 	surface_destroy(back_surface);
 	/* main_surface is destroyed when destroying the client. */
 	client_destroy(client);
+
+	return RESULT_OK;
 }

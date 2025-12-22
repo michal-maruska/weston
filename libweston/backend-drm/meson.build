@@ -2,20 +2,6 @@ if not get_option('backend-drm')
 	subdir_done()
 endif
 
-dep_libdisplay_info = dependency(
-	'libdisplay-info',
-	version: ['>= 0.1.1', '< 0.3.0'],
-	fallback: ['display-info', 'di_dep'],
-	default_options: [
-		'werror=false',
-	],
-	required: true,
-	not_found_message: 'Required by DRM-backend.',
-)
-if dep_libdisplay_info.version().version_compare('>= 0.2.0')
-	config_h.set('HAVE_LIBDISPLAY_INFO_HIGH_LEVEL_COLORIMETRY', '1')
-endif
-
 lib_backlight = static_library(
 	'backlight',
 	'libbacklight.c',
@@ -48,6 +34,7 @@ srcs_drm = [
 
 deps_drm = [
 	dep_egl, # optional
+	dep_vulkan, # optional
 	dep_libm,
 	dep_libdl,
 	dep_libshared,
@@ -69,7 +56,17 @@ if get_option('renderer-gl')
 	config_h.set('BUILD_DRM_GBM', '1')
 endif
 
-if get_option('backend-drm-screencast-vaapi')
+if get_option('renderer-vulkan')
+	if not dep_gbm.found()
+		error('drm-backend with Vulkan renderer requires gbm which was not found. Or, you can use \'-Drenderer-vulkan=false\'.')
+	endif
+	deps_drm += dep_gbm
+	srcs_drm += 'drm-gbm.c'
+	config_h.set('BUILD_DRM_GBM', '1')
+endif
+
+if get_option('deprecated-backend-drm-screencast-vaapi')
+        warning('deprecated-backend-drm-screencast-vaapi enabled. This option will be removed in future versions.')
 	foreach name : [ 'libva', 'libva-drm' ]
 		d = dependency(name, version: '>= 0.34.0', required: false)
 		if not d.found()

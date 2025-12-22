@@ -32,9 +32,10 @@
 #include <string.h>
 #include <stddef.h>
 
-#include <libweston/matrix.h>
+#include <libweston/linalg-3.h>
 #include "color_util.h"
 #include "weston-test-runner.h"
+#include "weston-test-assert.h"
 #include "shared/helpers.h"
 
 static_assert(sizeof(struct color_float) == 4 * sizeof(float),
@@ -46,103 +47,18 @@ static_assert(offsetof(struct color_float, g) == offsetof(struct color_float, rg
 static_assert(offsetof(struct color_float, b) == offsetof(struct color_float, rgb[COLOR_CHAN_B]),
 	      "unexpected offset for struct color_float::b");
 
-struct color_tone_curve {
+struct tone_curve_info {
 	enum transfer_fn fn;
 	enum transfer_fn inv_fn;
+	const char *name;
+	float (*apply)(float);
 
-	/* LCMS2 API */
-	int internal_type;
-	double param[5];
+	/* LCMS2 API curve parameters */
+	struct {
+		int type;
+		double param[5];
+	} lcms2;
 };
-
-/* Mapping from enum transfer_fn to LittleCMS curve parameters. */
-const struct color_tone_curve arr_curves[] = {
-	{
-		.fn = TRANSFER_FN_SRGB_EOTF,
-		.inv_fn = TRANSFER_FN_SRGB_EOTF_INVERSE,
-		.internal_type = 4,
-		.param = { 2.4, 1. / 1.055, 0.055 / 1.055, 1. / 12.92, 0.04045 },
-	},
-	{
-		.fn = TRANSFER_FN_ADOBE_RGB_EOTF,
-		.inv_fn = TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE,
-		.internal_type = 1,
-		.param = { 563./256., 0.0, 0.0, 0.0 , 0.0 },
-	},
-	{
-		.fn = TRANSFER_FN_POWER2_4_EOTF,
-		.inv_fn = TRANSFER_FN_POWER2_4_EOTF_INVERSE,
-		.internal_type = 1,
-		.param = { 2.4, 0.0, 0.0, 0.0 , 0.0 },
-	}
-};
-
-bool
-find_tone_curve_type(enum transfer_fn fn, int *type, double params[5])
-{
-	const int size_arr = ARRAY_LENGTH(arr_curves);
-	const struct color_tone_curve *curve;
-
-	for (curve = &arr_curves[0]; curve < &arr_curves[size_arr]; curve++ ) {
-		if (curve->fn == fn )
-			*type = curve->internal_type;
-		else if (curve->inv_fn == fn)
-			*type = -curve->internal_type;
-		else
-			continue;
-
-		memcpy(params, curve->param, sizeof(curve->param));
-		return true;
-	}
-
-	return false;
-}
-
-enum transfer_fn
-transfer_fn_invert(enum transfer_fn fn)
-{
-	switch (fn) {
-	case TRANSFER_FN_ADOBE_RGB_EOTF:
-		return TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE;
-	case TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE:
-		return TRANSFER_FN_ADOBE_RGB_EOTF;
-	case TRANSFER_FN_IDENTITY:
-		return TRANSFER_FN_IDENTITY;
-	case TRANSFER_FN_POWER2_4_EOTF:
-		return TRANSFER_FN_POWER2_4_EOTF_INVERSE;
-	case TRANSFER_FN_POWER2_4_EOTF_INVERSE:
-		return TRANSFER_FN_POWER2_4_EOTF;
-	case TRANSFER_FN_SRGB_EOTF:
-		return TRANSFER_FN_SRGB_EOTF_INVERSE;
-	case TRANSFER_FN_SRGB_EOTF_INVERSE:
-		return TRANSFER_FN_SRGB_EOTF;
-	}
-	assert(0 && "bad transfer_fn");
-	return 0;
-}
-
-const char *
-transfer_fn_name(enum transfer_fn fn)
-{
-	switch (fn) {
-	case TRANSFER_FN_ADOBE_RGB_EOTF:
-		return "AdobeRGB EOTF";
-	case TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE:
-		return "inverse AdobeRGB EOTF";
-	case TRANSFER_FN_IDENTITY:
-		return "identity";
-	case TRANSFER_FN_POWER2_4_EOTF:
-		return "power 2.4";
-	case TRANSFER_FN_POWER2_4_EOTF_INVERSE:
-		return "inverse power 2.4";
-	case TRANSFER_FN_SRGB_EOTF:
-		return "sRGB EOTF";
-	case TRANSFER_FN_SRGB_EOTF_INVERSE:
-		return "inverse sRGB EOTF";
-	}
-	assert(0 && "bad transfer_fn");
-	return 0;
-}
 
 /**
  * NaN comes out as is
@@ -155,17 +71,17 @@ ensure_unit_range(float v)
 	const float lim_lo = -tol;
 	const float lim_hi = 1.0f + tol;
 
-	assert(v >= lim_lo);
+	test_assert_f32_ge(v, lim_lo);
 	if (v < 0.0f)
 		return 0.0f;
-	assert(v <= lim_hi);
+	test_assert_f32_le(v, lim_hi);
 	if (v > 1.0f)
 		return 1.0f;
 	return v;
 }
 
 static float
-sRGB_EOTF(float e)
+sRGB_two_piece(float e)
 {
 	e = ensure_unit_range(e);
 	if (e <= 0.04045)
@@ -175,7 +91,7 @@ sRGB_EOTF(float e)
 }
 
 static float
-sRGB_EOTF_inv(float o)
+sRGB_two_piece_inv(float o)
 {
 	o = ensure_unit_range(o);
 	if (o <= 0.04045 / 12.92)
@@ -199,6 +115,20 @@ AdobeRGB_EOTF_inv(float o)
 }
 
 static float
+Power2_2_EOTF(float e)
+{
+	e = ensure_unit_range(e);
+	return pow(e, 2.2);
+}
+
+static float
+Power2_2_EOTF_inv(float o)
+{
+	o = ensure_unit_range(o);
+	return pow(o, 1./2.2);
+}
+
+static float
 Power2_4_EOTF(float e)
 {
 	e = ensure_unit_range(e);
@@ -212,36 +142,119 @@ Power2_4_EOTF_inv(float o)
 	return pow(o, 1./2.4);
 }
 
+static float
+identity(float v)
+{
+	return v;
+}
+
+static const struct tone_curve_info tone_curves[] = {
+	[TRANSFER_FN_IDENTITY] = {
+		.fn = TRANSFER_FN_IDENTITY,
+		.name = "identity",
+		.inv_fn = TRANSFER_FN_IDENTITY,
+		.apply = identity,
+	},
+	[TRANSFER_FN_SRGB] = {
+		.fn = TRANSFER_FN_SRGB,
+		.name = "sRGB two-piece",
+		.inv_fn = TRANSFER_FN_SRGB_INVERSE,
+		.apply = sRGB_two_piece,
+		.lcms2 = { 4, { 2.4, 1. / 1.055, 0.055 / 1.055, 1. / 12.92, 0.04045 }},
+	},
+	[TRANSFER_FN_SRGB_INVERSE] = {
+		.fn = TRANSFER_FN_SRGB_INVERSE,
+		.name = "inverse sRGB two-piece",
+		.inv_fn = TRANSFER_FN_SRGB,
+		.apply = sRGB_two_piece_inv,
+		.lcms2 = { -4, { 2.4, 1. / 1.055, 0.055 / 1.055, 1. / 12.92, 0.04045 }},
+	},
+	[TRANSFER_FN_ADOBE_RGB_EOTF] = {
+		.fn = TRANSFER_FN_ADOBE_RGB_EOTF,
+		.name = "AdobeRGB EOTF",
+		.inv_fn = TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE,
+		.apply = AdobeRGB_EOTF,
+		.lcms2 = { 1, { 563./256., 0.0, 0.0, 0.0 , 0.0 }},
+	},
+	[TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE] = {
+		.fn = TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE,
+		.name = "inverse AdobeRGB EOTF",
+		.inv_fn = TRANSFER_FN_ADOBE_RGB_EOTF,
+		.apply = AdobeRGB_EOTF_inv,
+		.lcms2 = { -1, { 563./256., 0.0, 0.0, 0.0 , 0.0 }},
+	},
+	[TRANSFER_FN_POWER2_2_EOTF] = {
+		.fn = TRANSFER_FN_POWER2_2_EOTF,
+		.name = "power 2.2",
+		.inv_fn = TRANSFER_FN_POWER2_2_EOTF_INVERSE,
+		.apply = Power2_2_EOTF,
+		.lcms2 = { 1, { 2.2, 0.0, 0.0, 0.0 , 0.0 }},
+	},
+	[TRANSFER_FN_POWER2_2_EOTF_INVERSE] = {
+		.fn = TRANSFER_FN_POWER2_2_EOTF_INVERSE,
+		.name = "inverse power 2.2",
+		.inv_fn = TRANSFER_FN_POWER2_2_EOTF,
+		.apply = Power2_2_EOTF_inv,
+		.lcms2 = { -1, { 2.2, 0.0, 0.0, 0.0 , 0.0 }},
+	},
+	[TRANSFER_FN_POWER2_4_EOTF] = {
+		.fn = TRANSFER_FN_POWER2_4_EOTF,
+		.name = "power 2.4",
+		.inv_fn = TRANSFER_FN_POWER2_4_EOTF_INVERSE,
+		.apply = Power2_4_EOTF,
+		.lcms2 = { 1, { 2.4, 0.0, 0.0, 0.0 , 0.0 }},
+	},
+	[TRANSFER_FN_POWER2_4_EOTF_INVERSE] = {
+		.fn = TRANSFER_FN_POWER2_4_EOTF_INVERSE,
+		.name = "inverse power 2.4",
+		.inv_fn = TRANSFER_FN_POWER2_4_EOTF,
+		.apply = Power2_4_EOTF_inv,
+		.lcms2 = { -1, { 2.4, 0.0, 0.0, 0.0 , 0.0 }},
+	},
+};
+
+static const struct tone_curve_info *
+find_tone_curve_info(enum transfer_fn fn)
+{
+	const struct tone_curve_info *tc;
+
+	test_assert_int_ge(fn, 0);
+	test_assert_int_lt(fn, ARRAY_LENGTH(tone_curves));
+
+	tc = &tone_curves[fn];
+	test_assert_int_eq(fn, tc->fn);
+
+	return tc;
+}
+
+void
+find_tone_curve_type(enum transfer_fn fn, int *type, double params[5])
+{
+	const struct tone_curve_info *t;
+
+	t = find_tone_curve_info(fn);
+	test_assert_ptr_not_null(t);
+
+	*type = t->lcms2.type;
+	memcpy(params, t->lcms2.param, sizeof (t->lcms2.param));
+}
+
+enum transfer_fn
+transfer_fn_invert(enum transfer_fn fn)
+{
+	return find_tone_curve_info(fn)->inv_fn;
+}
+
+const char *
+transfer_fn_name(enum transfer_fn fn)
+{
+	return find_tone_curve_info(fn)->name;
+}
+
 float
 apply_tone_curve(enum transfer_fn fn, float r)
 {
-	float ret = 0;
-
-	switch(fn) {
-	case TRANSFER_FN_IDENTITY:
-		ret = r;
-		break;
-	case TRANSFER_FN_SRGB_EOTF:
-		ret = sRGB_EOTF(r);
-		break;
-	case TRANSFER_FN_SRGB_EOTF_INVERSE:
-		ret = sRGB_EOTF_inv(r);
-		break;
-	case TRANSFER_FN_ADOBE_RGB_EOTF:
-		ret = AdobeRGB_EOTF(r);
-		break;
-	case TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE:
-		ret = AdobeRGB_EOTF_inv(r);
-		break;
-	case TRANSFER_FN_POWER2_4_EOTF:
-		ret = Power2_4_EOTF(r);
-		break;
-	case TRANSFER_FN_POWER2_4_EOTF_INVERSE:
-		ret = Power2_4_EOTF_inv(r);
-		break;
-	}
-
-	return ret;
+	return find_tone_curve_info(fn)->apply(r);
 }
 
 struct color_float
@@ -271,13 +284,13 @@ color_float_apply_curve(enum transfer_fn fn, struct color_float c)
 void
 sRGB_linearize(struct color_float *cf)
 {
-	*cf = color_float_apply_curve(TRANSFER_FN_SRGB_EOTF, *cf);
+	*cf = color_float_apply_curve(TRANSFER_FN_POWER2_2_EOTF, *cf);
 }
 
 void
 sRGB_delinearize(struct color_float *cf)
 {
-	*cf = color_float_apply_curve(TRANSFER_FN_SRGB_EOTF_INVERSE, *cf);
+	*cf = color_float_apply_curve(TRANSFER_FN_POWER2_2_EOTF_INVERSE, *cf);
 }
 
 struct color_float
@@ -302,23 +315,14 @@ color_float_unpremult(struct color_float in)
  * Returns the result of the matrix-vector multiplication mat * c.
  */
 struct color_float
-color_float_apply_matrix(const struct lcmsMAT3 *mat, struct color_float c)
+color_float_apply_matrix(struct weston_mat3f mat, struct color_float c)
 {
-	struct color_float result;
-	unsigned i, j;
+	struct weston_vec3f v = weston_m3f_mul_v3f(mat, WESTON_VEC3F(c.r, c.g, c.b));
 
-	/*
-	 * The matrix has an array of columns, hence i indexes to rows and
-	 * j indexes to columns.
-	 */
-	for (i = 0; i < 3; i++) {
-		result.rgb[i] = 0.0f;
-		for (j = 0; j < 3; j++)
-			result.rgb[i] += mat->v[j].n[i] * c.rgb[j];
-	}
-
-	result.a = c.a;
-	return result;
+	return (struct color_float){
+		.rgb = { v.r, v.g, v.b },
+		.a = c.a,
+	};
 }
 
 bool
@@ -335,7 +339,7 @@ should_include_vcgt(const double vcgt_exponents[COLOR_CHAN_NUM])
 
 void
 process_pixel_using_pipeline(enum transfer_fn pre_curve,
-			     const struct lcmsMAT3 *mat,
+			     struct weston_mat3f mat,
 			     enum transfer_fn post_curve,
 			     const double vcgt_exponents[COLOR_CHAN_NUM],
 			     const struct color_float *in,
@@ -353,44 +357,6 @@ process_pixel_using_pipeline(enum transfer_fn pre_curve,
 			cf.rgb[i] = pow(cf.rgb[i], vcgt_exponents[i]);
 
 	*out = cf;
-}
-
-static void
-weston_matrix_from_lcmsMAT3(struct weston_matrix *w, const struct lcmsMAT3 *m)
-{
-	unsigned r, c;
-
-	/* column-major */
-	weston_matrix_init(w);
-
-	for (c = 0; c < 3; c++) {
-		for (r = 0; r < 3; r++)
-			w->d[c * 4 + r] = m->v[c].n[r];
-	}
-}
-
-static void
-lcmsMAT3_from_weston_matrix(struct lcmsMAT3 *m, const struct weston_matrix *w)
-{
-	unsigned r, c;
-
-	for (c = 0; c < 3; c++) {
-		for (r = 0; r < 3; r++)
-			m->v[c].n[r] = w->d[c * 4 + r];
-	}
-}
-
-void
-lcmsMAT3_invert(struct lcmsMAT3 *result, const struct lcmsMAT3 *mat)
-{
-	struct weston_matrix inv;
-	struct weston_matrix w;
-	int ret;
-
-	weston_matrix_from_lcmsMAT3(&w, mat);
-	ret = weston_matrix_invert(&inv, &w);
-	assert(ret == 0);
-	lcmsMAT3_from_weston_matrix(result, &inv);
 }
 
 /** Update scalar statistics
@@ -489,7 +455,7 @@ rgb_diff_stat_print(const struct rgb_diff_stat *stat,
 	float scale = exp2f(scaling_bits) - 1.0f;
 	unsigned i;
 
-	assert(scaling_bits > 0);
+	test_assert_uint_gt(scaling_bits, 0);
 
 	testlog("%s error statistics, %u samples, value range 0.0 - %.1f:\n",
 		title, stat->two_norm.count, scale);

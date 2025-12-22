@@ -24,32 +24,43 @@
 
 #include "config.h"
 
-#include <stdint.h>
-#include <stdbool.h>
-#include <errno.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <limits.h>
-#include <sys/param.h>
-#include <sys/mman.h>
-#include <pixman.h>
-#include <cairo.h>
 #include <assert.h>
-
+#include <cairo.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <getopt.h>
+#include <limits.h>
+#include <pixman.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/param.h>
+#include <unistd.h>
 #include <wayland-client.h>
-#include "weston-output-capture-client-protocol.h"
-#include "shared/os-compatibility.h"
-#include "shared/xalloc.h"
-#include "shared/file-util.h"
+
+#include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "pixel-formats.h"
+#include "shared/client-buffer-util.h"
+#include "shared/file-util.h"
+#include "shared/os-compatibility.h"
+#include "shared/string-helpers.h"
+#include "shared/xalloc.h"
+#include "weston-output-capture-client-protocol.h"
 
 struct screenshooter_app {
+	struct wl_display *display;
 	struct wl_registry *registry;
 	struct wl_shm *shm;
+	struct zwp_linux_dmabuf_v1 *dmabuf;
 	struct weston_capture_v1 *capture_factory;
+
+	bool verbose;
+	const struct pixel_format_info *requested_format;
+	enum weston_capture_v1_source src_type;
+	enum client_buffer_type buffer_type;
 
 	struct wl_list output_list; /* struct screenshooter_output::link */
 
@@ -59,14 +70,14 @@ struct screenshooter_app {
 };
 
 struct screenshooter_buffer {
-	size_t len;
-	void *data;
-	struct wl_buffer *wl_buffer;
+	struct client_buffer *buf;
 	pixman_image_t *image;
+	enum weston_capture_v1_source src_type;
 };
 
 struct screenshooter_output {
 	struct screenshooter_app *app;
+	uint32_t name;
 	struct wl_list link; /* struct screenshooter_app::output_list */
 
 	struct wl_output *wl_output;
@@ -76,7 +87,8 @@ struct screenshooter_output {
 
 	int buffer_width;
 	int buffer_height;
-	const struct pixel_format_info *fmt;
+	struct wl_array formats;
+	bool formats_done;
 	struct screenshooter_buffer *buffer;
 };
 
@@ -93,10 +105,6 @@ screenshot_create_shm_buffer(struct screenshooter_app *app,
 			     const struct pixel_format_info *fmt)
 {
 	struct screenshooter_buffer *buffer;
-	struct wl_shm_pool *pool;
-	int fd;
-	size_t bytes_pp;
-	size_t stride;
 
 	assert(width > 0);
 	assert(height > 0);
@@ -105,41 +113,46 @@ screenshot_create_shm_buffer(struct screenshooter_app *app,
 
 	buffer = xzalloc(sizeof *buffer);
 
-	bytes_pp = fmt->bpp / 8;
-	stride = width * bytes_pp;
-	buffer->len = stride * height;
-
-	assert(width == stride / bytes_pp);
-	assert(height == buffer->len / stride);
-
-	fd = os_create_anonymous_file(buffer->len);
-	if (fd < 0) {
-		fprintf(stderr, "creating a buffer file for %zd B failed: %s\n",
-			buffer->len, strerror(errno));
-		free(buffer);
-		return NULL;
-	}
-
-	buffer->data = mmap(NULL, buffer->len, PROT_READ | PROT_WRITE,
-			    MAP_SHARED, fd, 0);
-	if (buffer->data == MAP_FAILED) {
-		fprintf(stderr, "mmap failed: %s\n", strerror(errno));
-		close(fd);
-		free(buffer);
-		return NULL;
-	}
-
-	pool = wl_shm_create_pool(app->shm, fd, buffer->len);
-	close(fd);
-	buffer->wl_buffer =
-		wl_shm_pool_create_buffer(pool, 0, width, height, stride,
-					  pixel_format_get_shm_format(fmt));
-	wl_shm_pool_destroy(pool);
+	buffer->buf = client_buffer_util_create_shm_buffer(app->shm,
+							   fmt,
+							   width,
+							   height);
 
 	buffer->image = pixman_image_create_bits(fmt->pixman_format,
 						 width, height,
-						 buffer->data, stride);
+						 buffer->buf->data,
+						 buffer->buf->strides[0]);
 	abort_oom_if_null(buffer->image);
+
+	return buffer;
+}
+
+static struct screenshooter_buffer *
+screenshot_create_udmabuf(struct screenshooter_app *app,
+			  int width, int height,
+			  const struct pixel_format_info *fmt)
+{
+	struct screenshooter_buffer* buffer = NULL;
+
+	assert(width > 0);
+	assert(height > 0);
+	assert(fmt);
+
+	buffer = xzalloc(sizeof *buffer);
+
+	buffer->buf = client_buffer_util_create_dmabuf_buffer(app->display,
+							      app->dmabuf,
+							      fmt,
+							      width,
+							      height);
+
+	if (fmt->pixman_format) {
+		buffer->image = pixman_image_create_bits(fmt->pixman_format,
+							 width, height,
+							 buffer->buf->data,
+							 buffer->buf->strides[0]);
+		abort_oom_if_null(buffer->image);
+	}
 
 	return buffer;
 }
@@ -150,9 +163,10 @@ screenshooter_buffer_destroy(struct screenshooter_buffer *buffer)
 	if (!buffer)
 		return;
 
-	pixman_image_unref(buffer->image);
-	munmap(buffer->data, buffer->len);
-	wl_buffer_destroy(buffer->wl_buffer);
+	if (buffer->image)
+		pixman_image_unref(buffer->image);
+
+	client_buffer_util_destroy_buffer(buffer->buf);
 	free(buffer);
 }
 
@@ -162,10 +176,37 @@ capture_source_handle_format(void *data,
 			     uint32_t drm_format)
 {
 	struct screenshooter_output *output = data;
+	uint32_t *fmt;
 
 	assert(output->source == proxy);
 
-	output->fmt = pixel_format_get_info(drm_format);
+	if (output->formats_done) {
+		wl_array_release(&output->formats);
+		wl_array_init(&output->formats);
+		output->formats_done = false;
+	}
+
+	fmt = wl_array_add(&output->formats, sizeof(uint32_t));
+	assert(fmt);
+	*fmt = drm_format;
+
+	if (output->app->verbose) {
+		const struct pixel_format_info *fmt_info;
+
+		fmt_info = pixel_format_get_info(drm_format);
+		assert(fmt_info);
+		printf("Got format %s / 0x%x\n", fmt_info->drm_format_name,
+		       drm_format);
+	}
+}
+
+static void
+capture_source_handle_formats_done(void *data,
+				   struct weston_capture_source_v1 *proxy)
+{
+	struct screenshooter_output *output = data;
+
+	output->formats_done = true;
 }
 
 static void
@@ -180,6 +221,9 @@ capture_source_handle_size(void *data,
 
 	output->buffer_width = width;
 	output->buffer_height = height;
+
+	if (output->app->verbose)
+		printf("Got size %dx%d\n", width, height);
 }
 
 static void
@@ -209,7 +253,9 @@ capture_source_handle_failed(void *data,
 	struct screenshooter_output *output = data;
 
 	output->app->waitcount--;
-	output->app->failed = true;
+	/* We don't set app.failed here because there could be other
+	 * outputs we still want to capture!
+	 */
 
 	if (msg)
 		fprintf(stderr, "Output capture error: %s\n", msg);
@@ -217,6 +263,7 @@ capture_source_handle_failed(void *data,
 
 static const struct weston_capture_source_v1_listener capture_source_handlers = {
 	.format = capture_source_handle_format,
+	.formats_done = capture_source_handle_formats_done,
 	.size = capture_source_handle_size,
 	.complete = capture_source_handle_complete,
 	.retry = capture_source_handle_retry,
@@ -231,16 +278,19 @@ create_output(struct screenshooter_app *app, uint32_t output_name, uint32_t vers
 	version = MIN(version, 4);
 	output = xzalloc(sizeof *output);
 	output->app = app;
+	output->name = output_name;
 	output->wl_output = wl_registry_bind(app->registry, output_name,
 					     &wl_output_interface, version);
 	abort_oom_if_null(output->wl_output);
 
 	output->source = weston_capture_v1_create(app->capture_factory,
 						  output->wl_output,
-						  WESTON_CAPTURE_V1_SOURCE_FRAMEBUFFER);
+						  app->src_type);
 	abort_oom_if_null(output->source);
 	weston_capture_source_v1_add_listener(output->source,
 					      &capture_source_handlers, output);
+
+	wl_array_init(&output->formats);
 
 	wl_list_insert(&app->output_list, &output->link);
 }
@@ -249,6 +299,8 @@ static void
 destroy_output(struct screenshooter_output *output)
 {
 	weston_capture_source_v1_destroy(output->source);
+
+	wl_array_release(&output->formats);
 
 	if (wl_output_get_version(output->wl_output) >= WL_OUTPUT_RELEASE_SINCE_VERSION)
 		wl_output_release(output->wl_output);
@@ -277,7 +329,13 @@ handle_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, weston_capture_v1_interface.name) == 0) {
 		app->capture_factory = wl_registry_bind(registry, name,
 							&weston_capture_v1_interface,
-							1);
+							2);
+	} else if (strcmp(interface, zwp_linux_dmabuf_v1_interface.name) == 0) {
+		if (version < 3)
+			return;
+		app->dmabuf = wl_registry_bind(registry, name,
+					       &zwp_linux_dmabuf_v1_interface,
+					       3);
 	}
 }
 
@@ -295,15 +353,46 @@ static const struct wl_registry_listener registry_listener = {
 static void
 screenshooter_output_capture(struct screenshooter_output *output)
 {
+	const struct pixel_format_info *fmt_info = NULL;
+	uint32_t *fmt;
+
 	screenshooter_buffer_destroy(output->buffer);
-	output->buffer = screenshot_create_shm_buffer(output->app,
-						      output->buffer_width,
-						      output->buffer_height,
-						      output->fmt);
+
+	wl_array_for_each(fmt, &output->formats) {
+		fmt_info = pixel_format_get_info(*fmt);
+		assert(fmt_info);
+
+		if (fmt_info == output->app->requested_format ||
+		    output->app->requested_format == NULL)
+			break;
+
+		fmt_info = NULL;
+	}
+	if (!fmt_info) {
+		fprintf(stderr, "No supported format found\n");
+		exit(1);
+	}
+
+	if (output->app->verbose)
+		printf("Creating buffer with format %s / 0x%x and size %ux%u\n",
+		       fmt_info->drm_format_name, fmt_info->format,
+		       output->buffer_width, output->buffer_height);
+
+	if (output->app->buffer_type == CLIENT_BUFFER_TYPE_SHM) {
+		output->buffer = screenshot_create_shm_buffer(output->app,
+							      output->buffer_width,
+							      output->buffer_height,
+							      fmt_info);
+	} else if (output->app->buffer_type == CLIENT_BUFFER_TYPE_DMABUF) {
+		output->buffer = screenshot_create_udmabuf(output->app,
+							   output->buffer_width,
+							   output->buffer_height,
+							   fmt_info);
+	}
 	abort_oom_if_null(output->buffer);
 
 	weston_capture_source_v1_capture(output->source,
-					 output->buffer->wl_buffer);
+					 output->buffer->buf->wl_buffer);
 	output->app->waitcount++;
 }
 
@@ -323,6 +412,8 @@ screenshot_write_png(const struct buffer_size *buff_size,
 	abort_oom_if_null(shot);
 
 	wl_list_for_each(output, output_list, link) {
+		client_buffer_util_maybe_sync_dmabuf_start(output->buffer->buf);
+
 		pixman_image_composite32(PIXMAN_OP_SRC,
 					 output->buffer->image, /* src */
 					 NULL, /* mask */
@@ -331,6 +422,8 @@ screenshot_write_png(const struct buffer_size *buff_size,
 					 0, 0, /* mask x,y */
 					 output->offset_x, output->offset_y, /* dst x,y */
 					 output->buffer_width, output->buffer_height);
+
+		client_buffer_util_maybe_sync_dmabuf_end(output->buffer->buf);
 	}
 
 	surface = cairo_image_surface_create_for_data((void *)pixman_image_get_data(shot),
@@ -347,6 +440,59 @@ screenshot_write_png(const struct buffer_size *buff_size,
 	}
 	cairo_surface_destroy(surface);
 	pixman_image_unref(shot);
+}
+
+static void
+screenshot_write_yuv(const struct buffer_size *buff_size,
+		     struct wl_list *output_list)
+{
+	struct screenshooter_output *output;
+	int i = 0;
+
+	wl_list_for_each(output, output_list, link) {
+		struct screenshooter_buffer *buffer = output->buffer;
+		char filepath[PATH_MAX];
+		char filepath_prefix[100];
+		int write_offset = 0;
+		FILE *fp;
+
+		sprintf(filepath_prefix, "wayland-screenshot-output-%d-", i++);
+		fp = file_create_dated(getenv("XDG_PICTURES_DIR"),
+				       filepath_prefix, ".yuv", filepath,
+				       sizeof(filepath));
+		if (!fp) {
+			fprintf(stderr, "Writing yuv file for output %d failed\n", i);
+			return;
+		}
+
+		client_buffer_util_maybe_sync_dmabuf_start(buffer->buf);
+
+		for (unsigned int j = 0; j < pixel_format_get_plane_count(buffer->buf->fmt); j++) {
+			int plane_height =
+				buffer->buf->height / pixel_format_hsub(buffer->buf->fmt, j);
+
+			for (int k = 0; k < plane_height; k++) {
+				size_t lines_written;
+
+				lines_written = fwrite(buffer->buf->data + write_offset,
+						       buffer->buf->bytes_per_line[j],
+						       1, fp);
+				if (lines_written != 1) {
+					fprintf(stderr,
+						"Writing yuv file for output %d " \
+						"failed during write(): %s\n",
+						i, strerror(errno));
+
+					return;
+				}
+
+				write_offset += buffer->buf->strides[j];
+			}
+		}
+		fclose (fp);
+
+		client_buffer_util_maybe_sync_dmabuf_end(buffer->buf);
+	}
 }
 
 static int
@@ -382,41 +528,182 @@ screenshot_set_buffer_size(struct buffer_size *buff_size,
 	return 0;
 }
 
+static bool
+received_formats_for_all_outputs(struct screenshooter_app *app)
+{
+	struct screenshooter_output *output;
+
+	wl_list_for_each(output, &app->output_list, link) {
+		if (!output->formats_done)
+			return false;
+	}
+	return true;
+}
+
+static bool
+all_output_formats_are_yuv(struct wl_list *output_list)
+{
+	struct screenshooter_output *output;
+	int color_model = -1;
+
+	wl_list_for_each(output, output_list, link) {
+		if (color_model == -1) {
+			color_model = output->buffer->buf->fmt->color_model;
+			continue;
+		}
+
+		if ((int)output->buffer->buf->fmt->color_model != color_model) {
+			fprintf(stderr, "Mixing of RGB and YUV output formats not supported\n");
+			exit(1);
+		}
+	}
+	assert(color_model == (int)COLOR_MODEL_RGB ||
+	       color_model == (int)COLOR_MODEL_YUV);
+	return color_model == COLOR_MODEL_YUV;
+}
+
+static void
+print_usage_and_exit(void)
+{
+	printf("usage flags:\n"
+	       "\t'-h,--help'"
+	       "\n\t\tprint this help output\n"
+	       "\t'-v,--verbose'"
+	       "\n\t\tprint additional output\n"
+	       "\t'-f,--format=<>'"
+	       "\n\t\tthe DRM format name to use without the DRM_FORMAT_ prefix, e.g. RGBA8888 or NV12\n"
+	       "\n\t\tIn case of YCbCr formats like NV12, instead of a single .png, the output will consist of raw .yuv files for each output."
+	       "\n\t\tThese files do not contain any metadata, however that can be added by converting to .y4m with a command like:"
+	       "\n\t\tffmpeg -s 1024x768 -r 1 -pix_fmt yuv420p -i ~/wayland-screenshot-output-0-2025-08-01_15-58-24.yuv -c:v copy screenshot.y4m\n"
+	       "\n\t\tNote that this may not work for all YCbCr pixel formats.\n"
+	       "\t'-s,--source-type=<>'"
+	       "\n\t\tframebuffer to use framebuffer source (default), "
+	       "\n\t\twriteback to use writeback source\n"
+	       "\t'-b,--buffer-type=<>'"
+	       "\n\t\tshm to use a SHM buffer (default), "
+	       "\n\t\tdmabuf to use a DMA buffer\n");
+	exit(0);
+}
+
+static const struct weston_enum_map source_types [] = {
+	{ "framebuffer", WESTON_CAPTURE_V1_SOURCE_FRAMEBUFFER },
+	{ "writeback", WESTON_CAPTURE_V1_SOURCE_WRITEBACK },
+};
+
+static const struct weston_enum_map buffer_types [] = {
+	{ "shm", CLIENT_BUFFER_TYPE_SHM },
+	{ "dmabuf", CLIENT_BUFFER_TYPE_DMABUF },
+};
+
 int
 main(int argc, char *argv[])
 {
-	struct wl_display *display;
 	struct screenshooter_output *output;
 	struct screenshooter_output *tmp_output;
 	struct buffer_size buff_size = {};
 	struct screenshooter_app app = {};
+	int c, option_index;
+
+	app.src_type = WESTON_CAPTURE_V1_SOURCE_FRAMEBUFFER;
+	app.buffer_type = CLIENT_BUFFER_TYPE_SHM;
+
+	static struct option long_options[] = {
+		{"help",        no_argument,       NULL, 'h'},
+		{"verbose",     no_argument,       NULL, 'v'},
+		{"format",      required_argument, NULL, 'f'},
+		{"source-type",	required_argument, NULL, 's'},
+		{"buffer-type", required_argument, NULL, 'b'},
+		{0, 0, 0, 0}
+	};
+
+	while ((c = getopt_long(argc, argv, "hvf:s:b:",
+			long_options, &option_index)) != -1) {
+		const struct weston_enum_map *entry;
+
+		switch(c) {
+		case 'v':
+			app.verbose = true;
+			break;
+		case 'f':
+			app.requested_format = pixel_format_get_info_by_drm_name(optarg);
+			if (!app.requested_format) {
+				fprintf(stderr, "Unknown format %s\n", optarg);
+				return -1;
+			}
+			break;
+		case 's':
+			entry = weston_enum_map_find_name(source_types,
+							  optarg);
+			if (!entry)
+				print_usage_and_exit();
+
+			app.src_type = entry->value;
+			break;
+		case 'b':
+			entry = weston_enum_map_find_name(buffer_types,
+							  optarg);
+			if (!entry)
+				print_usage_and_exit();
+
+			app.buffer_type = entry->value;
+			break;
+		default:
+			print_usage_and_exit();
+		}
+	}
 
 	wl_list_init(&app.output_list);
 
-	display = wl_display_connect(NULL);
-	if (display == NULL) {
+	app.display = wl_display_connect(NULL);
+	if (app.display == NULL) {
 		fprintf(stderr, "failed to create display: %s\n",
 			strerror(errno));
 		return -1;
 	}
 
-	app.registry = wl_display_get_registry(display);
+	app.registry = wl_display_get_registry(app.display);
 	wl_registry_add_listener(app.registry, &registry_listener, &app);
 
 	/* Process wl_registry advertisements */
-	wl_display_roundtrip(display);
+	wl_display_roundtrip(app.display);
 
-	if (!app.shm) {
-		fprintf(stderr, "Error: display does not support wl_shm\n");
-		return -1;
-	}
 	if (!app.capture_factory) {
 		fprintf(stderr, "Error: display does not support weston_capture_v1\n");
 		return -1;
 	}
+	if (app.src_type == WESTON_CAPTURE_V1_SOURCE_FRAMEBUFFER &&
+	    app.buffer_type != CLIENT_BUFFER_TYPE_SHM) {
+		fprintf(stderr, "Error: Only support shm buffer with framebuffer source\n");
+		return -1;
+	}
+
+	if(app.buffer_type == CLIENT_BUFFER_TYPE_SHM && !app.shm) {
+		fprintf(stderr, "Error: display does not support wl_shm\n");
+		return -1;
+	}
+	if (app.buffer_type == CLIENT_BUFFER_TYPE_DMABUF && !app.dmabuf) {
+		fprintf(stderr, "Error: Compositor does not support zwp_linux_dmabuf_v1\n");
+		return -1;
+	}
+
+	if (app.verbose) {
+		printf("Taking screenshot with %s source %s buffer\n",
+		       (app.src_type == WESTON_CAPTURE_V1_SOURCE_FRAMEBUFFER) ? "framebuffer" : "writeback",
+		       (app.buffer_type == CLIENT_BUFFER_TYPE_SHM) ? "shm" : "dma");
+	}
 
 	/* Process initial events for wl_output and weston_capture_source_v1 */
-	wl_display_roundtrip(display);
+	wl_display_roundtrip(app.display);
+
+	while (!received_formats_for_all_outputs(&app)) {
+		if (app.verbose)
+			printf("Waiting for compositor to send capture source data\n");
+
+		if (wl_display_dispatch(app.display) < 0) {
+			fprintf(stderr, "Error: connection terminated\n");
+			return -1;
+		}
+	}
 
 	do {
 		app.retry = false;
@@ -425,7 +712,7 @@ main(int argc, char *argv[])
 			screenshooter_output_capture(output);
 
 		while (app.waitcount > 0 && !app.failed) {
-			if (wl_display_dispatch(display) < 0)
+			if (wl_display_dispatch(app.display) < 0)
 				app.failed = true;
 			assert(app.waitcount >= 0);
 		}
@@ -434,7 +721,11 @@ main(int argc, char *argv[])
 	if (!app.failed) {
 		if (screenshot_set_buffer_size(&buff_size, &app.output_list) < 0)
 			return -1;
-		screenshot_write_png(&buff_size, &app.output_list);
+
+		if (all_output_formats_are_yuv(&app.output_list))
+			screenshot_write_yuv(&buff_size, &app.output_list);
+		else
+			screenshot_write_png(&buff_size, &app.output_list);
 	} else {
 		fprintf(stderr, "Error: screenshot or protocol failure\n");
 	}
@@ -444,8 +735,10 @@ main(int argc, char *argv[])
 
 	weston_capture_v1_destroy(app.capture_factory);
 	wl_shm_destroy(app.shm);
+	if (app.dmabuf)
+		zwp_linux_dmabuf_v1_destroy(app.dmabuf);
 	wl_registry_destroy(app.registry);
-	wl_display_disconnect(display);
+	wl_display_disconnect(app.display);
 
 	return 0;
 }

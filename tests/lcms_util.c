@@ -29,13 +29,13 @@
 
 #include <math.h>
 #include <lcms2.h>
-#include <assert.h>
 #include <stdlib.h>
 
-#include <libweston/matrix.h>
+#include <libweston/linalg.h>
 #include "shared/helpers.h"
 #include "color_util.h"
 #include "lcms_util.h"
+#include "weston-test-assert.h"
 
 static const cmsCIExyY wp_d65 = { 0.31271, 0.32902, 1.0 };
 
@@ -175,16 +175,20 @@ build_MPE_curve(cmsContext ctx, enum transfer_fn fn)
 		return build_MPE_curve_power(ctx, 563.0 / 256.0);
 	case TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE:
 		return build_MPE_curve_power(ctx, 256.0 / 563.0);
+	case TRANSFER_FN_POWER2_2_EOTF:
+		return build_MPE_curve_power(ctx, 2.2);
+	case TRANSFER_FN_POWER2_2_EOTF_INVERSE:
+		return build_MPE_curve_power(ctx, 1.0 / 2.2);
 	case TRANSFER_FN_POWER2_4_EOTF:
 		return build_MPE_curve_power(ctx, 2.4);
 	case TRANSFER_FN_POWER2_4_EOTF_INVERSE:
 		return build_MPE_curve_power(ctx, 1.0 / 2.4);
-	case TRANSFER_FN_SRGB_EOTF:
+	case TRANSFER_FN_SRGB:
 		return build_MPE_curve_sRGB(ctx);
-	case TRANSFER_FN_SRGB_EOTF_INVERSE:
+	case TRANSFER_FN_SRGB_INVERSE:
 		return build_MPE_curve_sRGB_inv(ctx);
 	default:
-		assert(0 && "unimplemented MPE curve");
+		test_assert_not_reached("unimplemented MPE curve");
 	}
 
 	return NULL;
@@ -199,7 +203,7 @@ build_MPE_curve_stage(cmsContext context_id, enum transfer_fn fn)
 	c = build_MPE_curve(context_id, fn);
 	stage = cmsStageAllocToneCurves(context_id, 3,
 					(cmsToneCurve *[3]){ c, c, c });
-	assert(stage);
+	test_assert_ptr_not_null(stage);
 	cmsFreeToneCurve(c);
 
 	return stage;
@@ -278,20 +282,14 @@ roundtrip_verification(cmsPipeline *DToB, cmsPipeline *BToD, float tolerance)
 	cmsPipelineFree(pip);
 
 	rgb_diff_stat_print(&stat, "DToB->BToD roundtrip", 8);
-	assert(stat.two_norm.max < tolerance);
+	test_assert_f32_lt(stat.two_norm.max, tolerance);
 }
 
-static const struct weston_vector ZEROS = {
-	.f = { 0.0, 0.0, 0.0, 1.0 }
-};
-static const struct weston_vector PCS_BLACK = {
-	.f = {
-		cmsPERCEPTUAL_BLACK_X,
-		cmsPERCEPTUAL_BLACK_Y,
-		cmsPERCEPTUAL_BLACK_Z,
-		1.0
-	}
-};
+static const struct weston_vec3f PCS_BLACK = WESTON_VEC3F(
+	cmsPERCEPTUAL_BLACK_X,
+	cmsPERCEPTUAL_BLACK_Y,
+	cmsPERCEPTUAL_BLACK_Z
+);
 
 /* Whether BPC matrix applies never, after or before transformation */
 enum bpc_dir {
@@ -302,7 +300,7 @@ enum bpc_dir {
 
 struct transform_sampler_context {
 	cmsHTRANSFORM t;
-	struct weston_matrix bpc;
+	struct weston_mat4f bpc;
 	enum bpc_dir dir;
 };
 
@@ -310,19 +308,19 @@ static cmsInt32Number
 transform_sampler(const float src[], float dst[], void *cargo)
 {
 	const struct transform_sampler_context *tsc = cargo;
-	struct weston_vector stmp = { .f = { src[0], src[1], src[2], 1.0 } };
-	struct weston_vector dtmp = { .f = { 0.0, 0.0, 0.0, 1.0 } };
+	struct weston_vec4f stmp = WESTON_VEC4F(src[0], src[1], src[2], 1.0);
+	struct weston_vec4f dtmp = WESTON_VEC4F(0.0, 0.0, 0.0, 1.0);
 
 	if (tsc->dir == BPC_DIR_BTOD)
-		weston_matrix_transform(&tsc->bpc, &stmp);
+		stmp = weston_m4f_mul_v4f(tsc->bpc, stmp);
 
-	cmsDoTransform(tsc->t, stmp.f, dtmp.f, 1);
+	cmsDoTransform(tsc->t, stmp.el, dtmp.el, 1);
 
 	if (tsc->dir == BPC_DIR_DTOB)
-		weston_matrix_transform(&tsc->bpc, &dtmp);
+		dtmp = weston_m4f_mul_v4f(tsc->bpc, dtmp);
 
 	for (int i = 0; i < 3; i++)
-		dst[i] = dtmp.f[i];
+		dst[i] = dtmp.el[i];
 
 	return 1; /* Success. */
 }
@@ -331,12 +329,12 @@ transform_sampler(const float src[], float dst[], void *cargo)
  * Black point compensation, copied from LittleCMS 2.16, cmscnvrt.c
  * Adapted to Weston code base.
  */
-static void
-ComputeBlackPointCompensation(struct weston_matrix *m,
-			      const struct weston_vector *src_bp,
-			      const struct weston_vector *dst_bp)
+static struct weston_mat4f
+ComputeBlackPointCompensation(struct weston_vec3f src_bp,
+			      struct weston_vec3f dst_bp)
 {
-	double ax, ay, az, bx, by, bz, tx, ty, tz;
+	struct weston_vec3f D50 = WESTON_VEC3F(cmsD50_XYZ()->X, cmsD50_XYZ()->Y, cmsD50_XYZ()->Z);
+	struct weston_vec3f a, b, t;
 
 	// Now we need to compute a matrix plus an offset m and of such of
 	// [m]*bpin + off = bpout
@@ -346,27 +344,24 @@ ComputeBlackPointCompensation(struct weston_matrix *m,
 	// a = (bpout - D50) / (bpin - D50)
 	// b = - D50* (bpout - bpin) / (bpin - D50)
 
-	tx = src_bp->f[0] - cmsD50_XYZ()->X;
-	ty = src_bp->f[1] - cmsD50_XYZ()->Y;
-	tz = src_bp->f[2] - cmsD50_XYZ()->Z;
+	t.x = src_bp.x - D50.x;
+	t.y = src_bp.y - D50.y;
+	t.z = src_bp.z - D50.z;
 
-	ax = (dst_bp->f[0] - cmsD50_XYZ()->X) / tx;
-	ay = (dst_bp->f[1] - cmsD50_XYZ()->Y) / ty;
-	az = (dst_bp->f[2] - cmsD50_XYZ()->Z) / tz;
+	a.x = (dst_bp.x - D50.x) / t.x;
+	a.y = (dst_bp.y - D50.y) / t.y;
+	a.z = (dst_bp.z - D50.z) / t.z;
 
-	bx = - cmsD50_XYZ()-> X * (dst_bp->f[0] - src_bp->f[0]) / tx;
-	by = - cmsD50_XYZ()-> Y * (dst_bp->f[1] - src_bp->f[1]) / ty;
-	bz = - cmsD50_XYZ()-> Z * (dst_bp->f[2] - src_bp->f[2]) / tz;
+	b.x = - D50.x * (dst_bp.x - src_bp.x) / t.x;
+	b.y = - D50.y * (dst_bp.y - src_bp.y) / t.y;
+	b.z = - D50.z * (dst_bp.z - src_bp.z) / t.z;
 
-	/*
-	 *     [ax,  0,  0, bx ]
-	 * m = [ 0, ay,  0, by ]
-	 *     [ 0,  0, az, bz ]
-	 *     [ 0,  0,  0,  1 ]
-	 */
-	weston_matrix_init(m);
-	weston_matrix_scale(m, ax, ay, az);
-	weston_matrix_translate(m, bx, by, bz);
+	return WESTON_MAT4F(
+		a.x, 0.0, 0.0, b.x,
+		0.0, a.y, 0.0, b.y,
+		0.0, 0.0, a.z, b.z,
+		0.0, 0.0, 0.0, 1.0
+	);
 }
 
 static cmsStage *
@@ -377,19 +372,19 @@ create_cLUT_from_transform(cmsContext context_id, const cmsHTRANSFORM t,
 	struct transform_sampler_context tsc;
 	cmsStage *cLUT_stage;
 
-	assert(dim_size);
+	test_assert_int_ne(dim_size, 0);
 
 	tsc.t = t;
 	tsc.dir = dir;
 	switch (tsc.dir) {
 	case BPC_DIR_NONE:
-		weston_matrix_init(&tsc.bpc);
+		tsc.bpc = WESTON_MAT4F_IDENTITY;
 		break;
 	case BPC_DIR_DTOB:
-		ComputeBlackPointCompensation(&tsc.bpc, &ZEROS, &PCS_BLACK);
+		tsc.bpc = ComputeBlackPointCompensation(WESTON_VEC3F_ZERO, PCS_BLACK);
 		break;
 	case BPC_DIR_BTOD:
-		ComputeBlackPointCompensation(&tsc.bpc, &PCS_BLACK, &ZEROS);
+		tsc.bpc = ComputeBlackPointCompensation(PCS_BLACK, WESTON_VEC3F_ZERO);
 		break;
 	}
 
@@ -412,7 +407,7 @@ vcgt_tag_add_to_profile(cmsContext context_id, cmsHPROFILE profile,
 	for (i = 0; i < COLOR_CHAN_NUM; i++)
 		vcgt_tag_curves[i] = cmsBuildGamma(context_id, vcgt_exponents[i]);
 
-	assert(cmsWriteTag(profile, cmsSigVcgtTag, vcgt_tag_curves));
+	test_assert_true(cmsWriteTag(profile, cmsSigVcgtTag, vcgt_tag_curves));
 
 	cmsFreeToneCurveTriple(vcgt_tag_curves);
 }
@@ -443,7 +438,7 @@ build_lcms_clut_profile_output(cmsContext context_id,
 	linear_device = cmsCreateRGBProfileTHR(context_id, &wp_d65,
 					       &pipeline->prim_output,
 					       identity_curves);
-	assert(cmsIsMatrixShaper(linear_device));
+	test_assert_true(cmsIsMatrixShaper(linear_device));
 	cmsFreeToneCurve(identity_curves[0]);
 
 	pcs = cmsCreateXYZProfileTHR(context_id);
@@ -551,8 +546,8 @@ build_lcms_matrix_shaper_profile_output(cmsContext context_id,
 	int type_inverse_tone_curve;
 	double inverse_tone_curve_param[5];
 
-	assert(find_tone_curve_type(pipeline->post_fn, &type_inverse_tone_curve,
-				    inverse_tone_curve_param));
+	find_tone_curve_type(pipeline->post_fn,
+			     &type_inverse_tone_curve, inverse_tone_curve_param);
 
 	/*
 	 * We are creating output profile and therefore we can use the following:
@@ -569,10 +564,10 @@ build_lcms_matrix_shaper_profile_output(cmsContext context_id,
 					    (-1) * type_inverse_tone_curve,
 					    inverse_tone_curve_param);
 
-	assert(arr_curves[0]);
+	test_assert_ptr_not_null(arr_curves[0]);
 	hRGB = cmsCreateRGBProfileTHR(context_id, &wp_d65,
 				      &pipeline->prim_output, arr_curves);
-	assert(hRGB);
+	test_assert_ptr_not_null(hRGB);
 
 	vcgt_tag_add_to_profile(context_id, hRGB, vcgt_exponents);
 

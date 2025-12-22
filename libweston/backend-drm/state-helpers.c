@@ -55,6 +55,9 @@ drm_plane_state_alloc(struct drm_output_state *state_output,
 	state->alpha = (plane->alpha_max < DRM_PLANE_ALPHA_OPAQUE) ?
 		       plane->alpha_max : DRM_PLANE_ALPHA_OPAQUE;
 
+	state->color_encoding = WDRM_PLANE_COLOR_ENCODING__COUNT;
+	state->color_range = WDRM_PLANE_COLOR_RANGE__COUNT;
+
 	/* Here we only add the plane state to the desired link, and not
 	 * set the member. Having an output pointer set means that the
 	 * plane will be displayed on the output; this won't be the case
@@ -213,7 +216,7 @@ drm_plane_state_put_back(struct drm_plane_state *state)
  * Given a weston_view, fill the drm_plane_state's co-ordinates to display on
  * a given plane.
  */
-bool
+void
 drm_plane_state_coords_for_paint_node(struct drm_plane_state *state,
 				      struct weston_paint_node *node,
 				      uint64_t zpos)
@@ -228,8 +231,11 @@ drm_plane_state_coords_for_paint_node(struct drm_plane_state *state,
 	uint16_t min_alpha = state->plane->alpha_min;
 	uint16_t max_alpha = state->plane->alpha_max;
 
-	if (!drm_paint_node_transform_supported(node, state->plane))
-		return false;
+	/* The caller has already checked supported transforms when creating
+	 * a list of candidate planes, so we should only ever get here with
+	 * a supported transform.
+	 */
+	assert(drm_paint_node_transform_supported(node, state->plane));
 
 	assert(node->valid_transform);
 	state->rotation = drm_rotation_from_output_transform(state->plane, node->transform);
@@ -312,8 +318,6 @@ drm_plane_state_coords_for_paint_node(struct drm_plane_state *state,
 	 * never exceed max_alpha if ev->alpha <= 1.0.
 	 */
 	state->alpha = min_alpha + (uint16_t)round((max_alpha - min_alpha) * ev->alpha);
-
-	return true;
 }
 
 /**
@@ -402,6 +406,9 @@ drm_output_state_duplicate(struct drm_output_state *src,
 	struct drm_plane_state *ps;
 
 	assert(dst);
+
+	/* The reuse bit isn't stored in the state */
+	assert(!(src->mode & DRM_OUTPUT_PROPOSE_STATE_REUSE));
 
 	/* Copy the whole structure, then individually modify the
 	 * pending_state, as well as the list link into our pending

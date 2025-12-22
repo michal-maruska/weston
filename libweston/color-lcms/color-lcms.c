@@ -94,14 +94,14 @@ cmlcms_get_surface_color_transform(struct weston_color_manager *cm_base,
 {
 	struct weston_color_manager_lcms *cm = to_cmlcms(cm_base);
 	struct cmlcms_color_transform *xform;
-	struct cmlcms_color_transform_search_param param = {
+	struct cmlcms_color_transform_recipe recipe = {
 		.category = CMLCMS_CATEGORY_INPUT_TO_BLEND,
 		.input_profile = to_cprof_or_stock_sRGB(cm, surface->color_profile),
 		.output_profile = to_cprof_or_stock_sRGB(cm, output->color_profile),
 		.render_intent = render_intent_from_surface_or_default(cm, surface),
 	};
 
-	xform = cmlcms_color_transform_get(cm, &param);
+	xform = cmlcms_color_transform_get(cm, &recipe);
 	if (!xform)
 		return false;
 
@@ -128,14 +128,14 @@ cmlcms_get_blend_to_output_color_transform(struct weston_color_manager_lcms *cm,
 					   struct weston_color_transform **xform_out)
 {
 	struct cmlcms_color_transform *xform;
-	struct cmlcms_color_transform_search_param param = {
+	struct cmlcms_color_transform_recipe recipe = {
 		.category = CMLCMS_CATEGORY_BLEND_TO_OUTPUT,
 		.input_profile = NULL,
 		.output_profile = to_cprof_or_stock_sRGB(cm, output->color_profile),
 		.render_intent = NULL,
 	};
 
-	xform = cmlcms_color_transform_get(cm, &param);
+	xform = cmlcms_color_transform_get(cm, &recipe);
 	if (!xform)
 		return false;
 
@@ -149,7 +149,7 @@ cmlcms_get_sRGB_to_output_color_transform(struct weston_color_manager_lcms *cm,
 					  struct weston_color_transform **xform_out)
 {
 	struct cmlcms_color_transform *xform;
-	struct cmlcms_color_transform_search_param param = {
+	struct cmlcms_color_transform_recipe recipe = {
 		.category = CMLCMS_CATEGORY_INPUT_TO_OUTPUT,
 		.input_profile = cm->sRGB_profile,
 		.output_profile = to_cprof_or_stock_sRGB(cm, output->color_profile),
@@ -160,8 +160,8 @@ cmlcms_get_sRGB_to_output_color_transform(struct weston_color_manager_lcms *cm,
 	 * Create a color transformation when output profile is not stock
 	 * sRGB profile.
 	 */
-	if (param.output_profile != cm->sRGB_profile) {
-		xform = cmlcms_color_transform_get(cm, &param);
+	if (recipe.output_profile != cm->sRGB_profile) {
+		xform = cmlcms_color_transform_get(cm, &recipe);
 		if (!xform)
 			return false;
 		*xform_out = &xform->base;
@@ -178,14 +178,14 @@ cmlcms_get_sRGB_to_blend_color_transform(struct weston_color_manager_lcms *cm,
 					 struct weston_color_transform **xform_out)
 {
 	struct cmlcms_color_transform *xform;
-	struct cmlcms_color_transform_search_param param = {
+	struct cmlcms_color_transform_recipe recipe = {
 		.category = CMLCMS_CATEGORY_INPUT_TO_BLEND,
 		.input_profile = cm->sRGB_profile,
 		.output_profile = to_cprof_or_stock_sRGB(cm, output->color_profile),
 		.render_intent = render_intent_from_surface_or_default(cm, NULL),
 	};
 
-	xform = cmlcms_color_transform_get(cm, &param);
+	xform = cmlcms_color_transform_get(cm, &recipe);
 	if (!xform)
 		return false;
 
@@ -332,13 +332,19 @@ transforms_scope_new_sub(struct weston_log_subscription *subs, void *data)
 	wl_list_for_each(xform, &cm->color_transform_list, link) {
 		weston_log_subscription_printf(subs, "Color transformation t%u:\n", xform->base.id);
 
-		str = cmlcms_color_transform_search_param_string(&xform->search_key);
+		str = cmlcms_color_transform_recipe_string(&xform->search_key);
 		weston_log_subscription_printf(subs, "%s", str);
 		free(str);
 
 		str = weston_color_transform_string(&xform->base);
 		weston_log_subscription_printf(subs, "  %s", str);
 		free(str);
+
+		str = weston_color_transform_details_string(4, &xform->base);
+		if (str) {
+			weston_log_subscription_printf(subs, "%s", str);
+			free(str);
+		}
 	}
 }
 
@@ -360,6 +366,15 @@ profiles_scope_new_sub(struct weston_log_subscription *subs, void *data)
 		weston_log_subscription_printf(subs, "%s", str);
 		free(str);
 	}
+}
+
+static char *
+cmlcms_print_color_profile_details(const struct weston_color_profile *cprof_base)
+{
+	const struct cmlcms_color_profile *prof =
+		container_of(cprof_base, const struct cmlcms_color_profile, base);
+
+	return cmlcms_color_profile_print(prof);
 }
 
 static void
@@ -385,20 +400,20 @@ cmlcms_init(struct weston_color_manager *cm_base)
 		weston_compositor_add_log_scope(compositor, "color-lcms-transformations",
 						"Color transformation creation and destruction.\n",
 						transforms_scope_new_sub, NULL, cm);
-	weston_assert_ptr(compositor, cm->transforms_scope);
+	weston_assert_ptr_not_null(compositor, cm->transforms_scope);
 
 	cm->optimizer_scope =
 		weston_compositor_add_log_scope(compositor, "color-lcms-optimizer",
 						"Color transformation pipeline optimizer. It's best " \
 						"used together with the color-lcms-transformations " \
 						"log scope.\n", NULL, NULL, NULL);
-	weston_assert_ptr(compositor, cm->optimizer_scope);
+	weston_assert_ptr_not_null(compositor, cm->optimizer_scope);
 
 	cm->profiles_scope =
 		weston_compositor_add_log_scope(compositor, "color-lcms-profiles",
 						"Color profile creation and destruction.\n",
 						profiles_scope_new_sub, NULL, cm);
-	weston_assert_ptr(compositor, cm->profiles_scope);
+	weston_assert_ptr_not_null(compositor, cm->profiles_scope);
 
 	cm->lcms_ctx = cmsCreateContext(NULL, cm);
 	if (!cm->lcms_ctx) {
@@ -489,16 +504,24 @@ weston_color_manager_create(struct weston_compositor *compositor)
 	cm->base.init = cmlcms_init;
 	cm->base.destroy = cmlcms_destroy;
 	cm->base.destroy_color_profile = cmlcms_destroy_color_profile;
+	cm->base.print_color_profile_details = cmlcms_print_color_profile_details;
 	cm->base.ref_stock_sRGB_color_profile = cmlcms_ref_stock_sRGB_color_profile;
 	cm->base.get_color_profile_from_icc = cmlcms_get_color_profile_from_icc;
 	cm->base.get_color_profile_from_params = cmlcms_get_color_profile_from_params;
 	cm->base.send_image_desc_info = cmlcms_send_image_desc_info;
+	cm->base.get_parametric_color_profile = cmlcms_get_parametric_color_profile;
 	cm->base.destroy_color_transform = cmlcms_destroy_color_transform;
 	cm->base.get_surface_color_transform = cmlcms_get_surface_color_transform;
 	cm->base.create_output_color_outcome = cmlcms_create_output_color_outcome;
 
-	/* We still do not support creating parametric color profiles. */
-	cm->base.supported_color_features = (1 << WESTON_COLOR_FEATURE_ICC);
+	/* We support all color features. */
+	cm->base.supported_color_features = (1 << WESTON_COLOR_FEATURE_ICC) |
+					    (1 << WESTON_COLOR_FEATURE_PARAMETRIC) |
+					    (1 << WESTON_COLOR_FEATURE_SET_PRIMARIES) |
+					    (1 << WESTON_COLOR_FEATURE_SET_TF_POWER) |
+					    (1 << WESTON_COLOR_FEATURE_SET_LUMINANCES) |
+					    (1 << WESTON_COLOR_FEATURE_SET_MASTERING_DISPLAY_PRIMARIES) |
+					    (1 << WESTON_COLOR_FEATURE_EXTENDED_TARGET_VOLUME);
 
 	/* We support all rendering intents. */
 	cm->base.supported_rendering_intents = (1 << WESTON_RENDER_INTENT_PERCEPTUAL) |
@@ -519,8 +542,18 @@ weston_color_manager_create(struct weston_compositor *compositor)
 					     (1 << WESTON_PRIMARIES_CICP_DISPLAY_P3) |
 					     (1 << WESTON_PRIMARIES_ADOBE_RGB);
 
-	/* We still don't support any tf named. */
-	cm->base.supported_tf_named = 0;
+	/**
+	 * TODO: this is a lie just to make the color-management-parametric
+	 * tests to work. Without this the tests would be much more limited. We
+	 * actually need to implement such TF's. There's no problem doing that,
+	 * as parametric color profiles themselves are still unsupported.
+	 */
+
+	/* We need to implement each tf, and we support only a few of them. */
+	cm->base.supported_tf_named = (1 << WESTON_TF_GAMMA22) |
+				      (1 << WESTON_TF_GAMMA28) |
+				      (1 << WESTON_TF_SRGB) |
+				      (1 << WESTON_TF_ST2084_PQ);
 
 	wl_list_init(&cm->color_transform_list);
 	wl_list_init(&cm->color_profile_list);

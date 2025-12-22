@@ -144,29 +144,29 @@ weston_head_init(struct weston_head *head, const char *name);
 void
 weston_head_release(struct weston_head *head);
 
-void
+bool
 weston_head_set_connection_status(struct weston_head *head, bool connected);
 
 void
 weston_head_set_internal(struct weston_head *head);
 
-void
+bool
 weston_head_set_monitor_strings(struct weston_head *head,
 				const char *make,
 				const char *model,
 				const char *serialno);
-void
+bool
 weston_head_set_non_desktop(struct weston_head *head, bool non_desktop);
 
-void
+bool
 weston_head_set_physical_size(struct weston_head *head,
 			      int32_t mm_width, int32_t mm_height);
 
-void
+bool
 weston_head_set_subpixel(struct weston_head *head,
 			 enum wl_output_subpixel sp);
 
-void
+bool
 weston_head_set_transform(struct weston_head *head, uint32_t transform);
 
 void
@@ -177,6 +177,9 @@ void
 weston_head_set_supported_colorimetry_mask(struct weston_head *head,
 					   uint32_t colorimetry_mask);
 
+void
+weston_head_set_supported_vrr_modes_mask(struct weston_head *head,
+					 uint32_t vrr_modes_mask);
 /* weston_output */
 
 void
@@ -340,7 +343,7 @@ void
 notify_tablet_tool_frame(struct weston_tablet_tool *tool,
 			 const struct timespec *time);
 
-bool
+void
 weston_output_flush_damage_for_plane(struct weston_output *output,
 				     struct weston_plane *plane,
 				     pixman_region32_t *damage);

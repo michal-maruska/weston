@@ -54,6 +54,8 @@ enum shell_type {
 	SHELL_FULLSCREEN,
 	/** The kiosk shell */
 	SHELL_KIOSK,
+	/** The lua shell */
+	SHELL_LUA,
 };
 
 /** Weston compositor configuration
@@ -81,7 +83,9 @@ struct compositor_setup {
 	unsigned height;
 	/** Default output scale. */
 	int scale;
-	/** Default output refresh rate (headless backend). */
+	/** Default output refresh rate (headless backend); set to
+	 * HIGHEST_REFRESH_RATE for maximum throughput, or to 0 for only
+	 * rendering on demand (e.g. when a screenshot is requested). */
 	int refresh;
 	/** Default output transform, one of WL_OUTPUT_TRANSFORM_*. */
 	enum wl_output_transform transform;
@@ -113,6 +117,7 @@ compositor_setup_defaults_(struct compositor_setup *setup,
  * - xwayland: no
  * - width: 320
  * - height: 240
+ * - refresh: 0 (repaint only on demand)
  * - scale: 1
  * - transform: WL_OUTPUT_TRANSFORM_NORMAL
  * - config_file: none

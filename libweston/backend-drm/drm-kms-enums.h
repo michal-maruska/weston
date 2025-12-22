@@ -56,6 +56,8 @@ enum wdrm_plane_property {
 	WDRM_PLANE_ZPOS,
 	WDRM_PLANE_ROTATION,
 	WDRM_PLANE_ALPHA,
+	WDRM_PLANE_COLOR_ENCODING,
+	WDRM_PLANE_COLOR_RANGE,
 	WDRM_PLANE__COUNT
 };
 
@@ -83,6 +85,27 @@ enum wdrm_plane_rotation {
 };
 
 /**
+ * Possible values for the WDRM_PLANE_COLOR_ENCODING property.
+ */
+enum wdrm_plane_color_encoding {
+	WDRM_PLANE_COLOR_ENCODING_BT601 = 0,
+	WDRM_PLANE_COLOR_ENCODING_BT709,
+	WDRM_PLANE_COLOR_ENCODING_BT2020,
+	WDRM_PLANE_COLOR_ENCODING__COUNT
+};
+#define WDRM_PLANE_COLOR_ENCODING_DEFAULT WDRM_PLANE_COLOR_ENCODING_BT709
+
+/**
+ * Possible values for the WDRM_PLANE_COLOR_RANGE property.
+ */
+enum wdrm_plane_color_range {
+	WDRM_PLANE_COLOR_RANGE_LIMITED = 0,
+	WDRM_PLANE_COLOR_RANGE_FULL,
+	WDRM_PLANE_COLOR_RANGE__COUNT
+};
+#define WDRM_PLANE_COLOR_RANGE_DEFAULT WDRM_PLANE_COLOR_RANGE_LIMITED
+
+/**
  * List of properties attached to a DRM connector
  */
 enum wdrm_connector_property {
@@ -100,6 +123,7 @@ enum wdrm_connector_property {
 	WDRM_CONNECTOR_MAX_BPC,
 	WDRM_CONNECTOR_CONTENT_TYPE,
 	WDRM_CONNECTOR_COLORSPACE,
+	WDRM_CONNECTOR_VRR_CAPABLE,
 	WDRM_CONNECTOR__COUNT
 };
 

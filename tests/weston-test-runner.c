@@ -1,5 +1,6 @@
 /*
  * Copyright © 2012 Intel Corporation
+ * Copyright 2025 Collabora, Ltd.
  *
  * Permission is hereby granted, free of charge, to any person obtaining
  * a copy of this software and associated documentation files (the
@@ -30,7 +31,6 @@
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <string.h>
-#include <assert.h>
 #include <errno.h>
 #include <signal.h>
 #include <getopt.h>
@@ -38,6 +38,7 @@
 
 #include "test-config.h"
 #include "weston-test-runner.h"
+#include "weston-test-assert.h"
 #include "weston-testsuite-data.h"
 #include "shared/string-helpers.h"
 
@@ -59,6 +60,7 @@ struct weston_test_run_info {
 };
 
 static const struct weston_test_run_info *test_run_info_;
+static int assert_counter_ = 0;
 
 /** Get the test name string with counter
  *
@@ -112,6 +114,24 @@ testlog(const char *fmt, ...)
 	va_end(argp);
 }
 
+int
+weston_assert_counter_get(void)
+{
+	return assert_counter_;
+}
+
+void
+weston_assert_counter_inc(void)
+{
+	assert_counter_++;
+}
+
+void
+weston_assert_counter_reset(void)
+{
+	assert_counter_ = 0;
+}
+
 static const void *
 fixture_setup_array_get_arg(const struct fixture_setup_array *fsa, int findex)
 {
@@ -155,6 +175,7 @@ run_test(struct wet_testsuite_data *suite_data, int fixture_nr,
 	 int iteration)
 {
 	struct weston_test_run_info info;
+	enum test_result_code ret;
 
 	if (data) {
 		snprintf(info.name, sizeof(info.name), "%s-f%02d-e%02d",
@@ -165,16 +186,13 @@ run_test(struct wet_testsuite_data *suite_data, int fixture_nr,
 	}
 	info.fixture_nr = fixture_nr;
 
+	weston_assert_counter_reset();
+
 	test_run_info_ = &info;
-	t->run(suite_data, data);
+	ret = t->run(suite_data, data);
 	test_run_info_ = NULL;
 
-	/*
-	 * XXX: We should return t->run(data); but that requires changing
-	 * the function signature and stop using assert() in tests.
-	 * https://gitlab.freedesktop.org/wayland/weston/issues/311
-	 */
-	return RESULT_OK;
+	return weston_assert_counter_get() ? RESULT_FAIL : ret;
 }
 
 static void
@@ -274,7 +292,7 @@ result_to_str(enum test_result_code ret)
 #endif
 	};
 
-	assert(ret >= 0 && ret < ARRAY_LENGTH(names));
+	test_assert_true(ret >= 0 && ret < ARRAY_LENGTH(names));
 	return names[ret];
 }
 
@@ -458,7 +476,7 @@ weston_test_harness_create(int argc, char **argv)
 	struct weston_test_harness *harness;
 
 	harness = zalloc(sizeof(*harness));
-	assert(harness);
+	test_assert_ptr_not_null(harness);
 
 	harness->fixt_ind = -1;
 	harness->case_ind = -1;
@@ -651,7 +669,7 @@ main(int argc, char *argv[])
 	enum test_result_code ret;
 	enum test_result_code result = RESULT_OK;
 	const struct fixture_setup_array *fsa;
-	const char *leak_dl_handle;
+	char *leak_dl_handles;
 	int fi;
 	int fi_end;
 
@@ -663,10 +681,21 @@ main(int argc, char *argv[])
 	 * Turns out if llvmpipe is always live, then the pointers are always
 	 * reachable, so LeakSanitizer just tells us about our own code rather
 	 * than LLVM's, so ...
+	 *
+         * This hack works so well that it also solved the obscure leak reports
+	 * for lavapipe and libgallium!
 	 */
-	leak_dl_handle = getenv("WESTON_CI_LEAK_DL_HANDLE");
-	if (leak_dl_handle)
-		(void) dlopen(leak_dl_handle, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
+	leak_dl_handles = getenv("WESTON_CI_LEAK_DL_HANDLES");
+	if (leak_dl_handles) {
+		char* token;
+
+		token = strtok(leak_dl_handles, ":");
+		while (token) {
+			if (strlen(token) > 0)
+				(void) dlopen(token, RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE);
+			token = strtok(NULL, ":");
+		}
+	}
 
 	harness = weston_test_harness_create(argc, argv);
 

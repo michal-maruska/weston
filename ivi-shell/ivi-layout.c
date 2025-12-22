@@ -63,6 +63,7 @@
 
 #include "frontend/weston.h"
 #include <libweston/libweston.h>
+#include <libweston/shell-utils.h>
 #include "ivi-shell.h"
 #include "ivi-layout-export.h"
 #include "ivi-layout-private.h"
@@ -284,7 +285,7 @@ destroy_screen(struct ivi_layout_screen *iviscrn)
 }
 
 static void
-output_destroyed_event(struct wl_listener *listener, void *data)
+output_destroy_iviscreen(struct wl_listener *listener, void *data)
 {
 	struct weston_output *destroyed_output = data;
 	struct ivi_layout_screen *iviscrn;
@@ -295,8 +296,8 @@ output_destroyed_event(struct wl_listener *listener, void *data)
 
 }
 
-static void
-add_screen(struct weston_output *output)
+static struct ivi_layout_screen *
+create_screen(struct weston_output *output)
 {
 	struct ivi_layout *layout = get_instance();
 	struct ivi_layout_screen *iviscrn = NULL;
@@ -309,26 +310,24 @@ add_screen(struct weston_output *output)
 	wl_list_init(&iviscrn->pending.layer_list);
 	wl_list_init(&iviscrn->order.layer_list);
 	wl_list_insert(&layout->screen_list, &iviscrn->link);
+
+	return iviscrn;
 }
 
 static void
-output_created_event(struct wl_listener *listener, void *data)
+create_ivi_screen(struct ivi_layout *layout, struct weston_output *output)
 {
-	struct weston_output *created_output = data;
-	add_screen(created_output);
+	create_screen(output);
 }
 
-/**
- * Internal API to initialize ivi_screens found from output_list of weston_compositor.
- * Called by ivi_layout_init.
- */
 static void
-create_screen(struct weston_compositor *ec)
+output_create_iviscreen(struct wl_listener *listener, void *data)
 {
-	struct weston_output *output = NULL;
+	struct ivi_layout *layout =
+		container_of(listener, struct ivi_layout, output_created);
+	struct weston_output *output = data;
 
-	wl_list_for_each(output, &ec->output_list, link)
-		add_screen(output);
+	create_ivi_screen(layout, output);
 }
 
 /**
@@ -463,33 +462,33 @@ calc_inverse_matrix_transform(const struct weston_matrix *matrix,
 	}
 
 	/* The vectors and matrices involved will always produce f[3] == 1.0. */
-	top_left.f[0] = rect_input->x;
-	top_left.f[1] = rect_input->y;
-	top_left.f[2] = 0.0f;
-	top_left.f[3] = 1.0f;
+	top_left.v.el[0] = rect_input->x;
+	top_left.v.el[1] = rect_input->y;
+	top_left.v.el[2] = 0.0f;
+	top_left.v.el[3] = 1.0f;
 
-	bottom_right.f[0] = rect_input->x + rect_input->width;
-	bottom_right.f[1] = rect_input->y + rect_input->height;
-	bottom_right.f[2] = 0.0f;
-	bottom_right.f[3] = 1.0f;
+	bottom_right.v.el[0] = rect_input->x + rect_input->width;
+	bottom_right.v.el[1] = rect_input->y + rect_input->height;
+	bottom_right.v.el[2] = 0.0f;
+	bottom_right.v.el[3] = 1.0f;
 
 	weston_matrix_transform(&m, &top_left);
 	weston_matrix_transform(&m, &bottom_right);
 
-	if (top_left.f[0] < bottom_right.f[0]) {
-		rect_output->x = floorf(top_left.f[0]);
-		rect_output->width = ceilf(bottom_right.f[0] - rect_output->x);
+	if (top_left.v.el[0] < bottom_right.v.el[0]) {
+		rect_output->x = floor(top_left.v.el[0]);
+		rect_output->width = ceil(bottom_right.v.el[0] - rect_output->x);
 	} else {
-		rect_output->x = floorf(bottom_right.f[0]);
-		rect_output->width = ceilf(top_left.f[0] - rect_output->x);
+		rect_output->x = floor(bottom_right.v.el[0]);
+		rect_output->width = ceil(top_left.v.el[0] - rect_output->x);
 	}
 
-	if (top_left.f[1] < bottom_right.f[1]) {
-		rect_output->y = floorf(top_left.f[1]);
-		rect_output->height = ceilf(bottom_right.f[1] - rect_output->y);
+	if (top_left.v.el[1] < bottom_right.v.el[1]) {
+		rect_output->y = floor(top_left.v.el[1]);
+		rect_output->height = ceil(bottom_right.v.el[1] - rect_output->y);
 	} else {
-		rect_output->y = floorf(bottom_right.f[1]);
-		rect_output->height = ceilf(top_left.f[1] - rect_output->y);
+		rect_output->y = floor(bottom_right.v.el[1]);
+		rect_output->height = ceil(top_left.v.el[1] - rect_output->y);
 	}
 
 	ivi_rectangle_intersect(rect_output, boundingbox, rect_output);
@@ -986,6 +985,16 @@ ivi_layout_add_listener_configure_desktop_surface(struct wl_listener *listener)
 	assert(listener);
 
 	wl_signal_add(&layout->surface_notification.configure_desktop_changed, listener);
+}
+
+static void
+ivi_layout_add_listener_desktop_surface_ping_timeout(struct wl_listener *listener)
+{
+	struct ivi_layout *layout = get_instance();
+
+	assert(listener);
+
+	wl_signal_add(&layout->surface_notification.ping_timeout, listener);
 }
 
 static int32_t
@@ -1564,6 +1573,12 @@ ivi_layout_screen_set_render_order(struct weston_output *output,
 	iviscrn->order.dirty = 1;
 }
 
+static void
+ivi_layout_set_screen_ready(struct weston_output *output)
+{
+	weston_output_set_ready(output);
+}
+
 /**
  * This function is used by the additional ivi-module because of dumping ivi_surface sceenshot.
  * The ivi-module, e.g. ivi-controller.so, is in wayland-ivi-extension of Genivi's Layer Management.
@@ -1912,6 +1927,14 @@ ivi_layout_desktop_surface_configure(struct ivi_layout_surface *ivisurf,
 		       ivisurf);
 }
 
+void
+ivi_layout_desktop_surface_ping_timeout(struct weston_desktop_client *client)
+{
+	struct ivi_layout *layout = get_instance();
+
+	wl_signal_emit_mutable(&layout->surface_notification.ping_timeout, client);
+}
+
 struct ivi_layout_surface*
 ivi_layout_desktop_surface_create(struct weston_surface *wl_surface,
 				  struct weston_desktop_surface *surface)
@@ -2098,6 +2121,7 @@ void
 ivi_layout_init(struct weston_compositor *ec, struct ivi_shell *shell)
 {
 	struct ivi_layout *layout = get_instance();
+	struct weston_output *output;
 
 	layout->shell = shell;
 
@@ -2113,6 +2137,7 @@ ivi_layout_init(struct weston_compositor *ec, struct ivi_shell *shell)
 	wl_signal_init(&layout->surface_notification.removed);
 	wl_signal_init(&layout->surface_notification.configure_changed);
 	wl_signal_init(&layout->surface_notification.configure_desktop_changed);
+	wl_signal_init(&layout->surface_notification.ping_timeout);
 
 	wl_signal_init(&layout->input_panel_notification.configure_changed);
 	wl_signal_init(&layout->input_panel_notification.show);
@@ -2126,12 +2151,13 @@ ivi_layout_init(struct weston_compositor *ec, struct ivi_shell *shell)
 	weston_layer_set_position(&layout->layout_layer,
 				  WESTON_LAYER_POSITION_NORMAL);
 
-	create_screen(ec);
-
-	layout->output_created.notify = output_created_event;
+	layout->output_created.notify = output_create_iviscreen;
 	wl_signal_add(&ec->output_created_signal, &layout->output_created);
 
-	layout->output_destroyed.notify = output_destroyed_event;
+	wl_list_for_each(output, &ec->output_list, link)
+		create_ivi_screen(layout, output);
+
+	layout->output_destroyed.notify = output_destroy_iviscreen;
 	wl_signal_add(&ec->output_destroyed_signal, &layout->output_destroyed);
 
 	layout->transitions = ivi_layout_transition_set_create(ec);
@@ -2146,6 +2172,10 @@ void
 ivi_layout_fini(void)
 {
 	struct ivi_layout *layout = get_instance();
+	struct ivi_layout_screen *iviscrn, *iviscrn_tmp;
+
+	wl_list_for_each_safe(iviscrn, iviscrn_tmp, &layout->screen_list, link)
+		destroy_screen(iviscrn);
 
 	weston_layer_fini(&layout->layout_layer);
 
@@ -2164,32 +2194,33 @@ static struct ivi_layout_interface ivi_layout_interface = {
 	/**
 	 * surface controller interfaces
 	 */
-	.add_listener_create_surface	= ivi_layout_add_listener_create_surface,
-	.add_listener_remove_surface	= ivi_layout_add_listener_remove_surface,
-	.add_listener_configure_surface	= ivi_layout_add_listener_configure_surface,
-	.add_listener_configure_desktop_surface	= ivi_layout_add_listener_configure_desktop_surface,
-	.get_surface				= shell_get_ivi_layout_surface,
-	.get_surfaces				= ivi_layout_get_surfaces,
-	.get_id_of_surface			= ivi_layout_get_id_of_surface,
-	.get_surface_from_id			= ivi_layout_get_surface_from_id,
-	.get_properties_of_surface		= ivi_layout_get_properties_of_surface,
-	.get_surfaces_on_layer			= ivi_layout_get_surfaces_on_layer,
-	.surface_set_visibility			= ivi_layout_surface_set_visibility,
-	.surface_set_opacity			= ivi_layout_surface_set_opacity,
-	.surface_set_source_rectangle		= ivi_layout_surface_set_source_rectangle,
-	.surface_set_destination_rectangle	= ivi_layout_surface_set_destination_rectangle,
-	.surface_add_listener			= ivi_layout_surface_add_listener,
-	.surface_get_weston_surface		= ivi_layout_surface_get_weston_surface,
-	.surface_set_transition			= ivi_layout_surface_set_transition,
-	.surface_set_transition_duration	= ivi_layout_surface_set_transition_duration,
-	.surface_set_id				= ivi_layout_surface_set_id,
-	.surface_activate			= ivi_layout_surface_activate,
-	.surface_is_active			= ivi_layout_surface_is_active,
+	.add_listener_create_surface			= ivi_layout_add_listener_create_surface,
+	.add_listener_remove_surface			= ivi_layout_add_listener_remove_surface,
+	.add_listener_configure_surface			= ivi_layout_add_listener_configure_surface,
+	.add_listener_configure_desktop_surface		= ivi_layout_add_listener_configure_desktop_surface,
+	.add_listener_desktop_surface_ping_timeout	= ivi_layout_add_listener_desktop_surface_ping_timeout,
+	.get_surface					= shell_get_ivi_layout_surface,
+	.get_surfaces					= ivi_layout_get_surfaces,
+	.get_id_of_surface				= ivi_layout_get_id_of_surface,
+	.get_surface_from_id				= ivi_layout_get_surface_from_id,
+	.get_properties_of_surface			= ivi_layout_get_properties_of_surface,
+	.get_surfaces_on_layer				= ivi_layout_get_surfaces_on_layer,
+	.surface_set_visibility				= ivi_layout_surface_set_visibility,
+	.surface_set_opacity				= ivi_layout_surface_set_opacity,
+	.surface_set_source_rectangle			= ivi_layout_surface_set_source_rectangle,
+	.surface_set_destination_rectangle		= ivi_layout_surface_set_destination_rectangle,
+	.surface_add_listener				= ivi_layout_surface_add_listener,
+	.surface_get_weston_surface			= ivi_layout_surface_get_weston_surface,
+	.surface_set_transition				= ivi_layout_surface_set_transition,
+	.surface_set_transition_duration		= ivi_layout_surface_set_transition_duration,
+	.surface_set_id					= ivi_layout_surface_set_id,
+	.surface_activate				= ivi_layout_surface_activate,
+	.surface_is_active				= ivi_layout_surface_is_active,
 
 	/**
 	 * layer controller interfaces
 	 */
-	.add_listener_create_layer			= ivi_layout_add_listener_create_layer,
+	.add_listener_create_layer		= ivi_layout_add_listener_create_layer,
 	.add_listener_remove_layer		= ivi_layout_add_listener_remove_layer,
 	.layer_create_with_dimension		= ivi_layout_layer_create_with_dimension,
 	.layer_destroy				= ivi_layout_layer_destroy,
@@ -2216,6 +2247,7 @@ static struct ivi_layout_interface ivi_layout_interface = {
 	.screen_add_layer		= ivi_layout_screen_add_layer,
 	.screen_remove_layer		= ivi_layout_screen_remove_layer,
 	.screen_set_render_order	= ivi_layout_screen_set_render_order,
+	.screen_ready			= ivi_layout_set_screen_ready,
 
 	/**
 	 * animation

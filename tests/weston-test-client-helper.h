@@ -28,19 +28,25 @@
 
 #include "config.h"
 
-#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 #include <pixman.h>
 
 #include <wayland-client-protocol.h>
+#include "color-representation-v1-client-protocol.h"
+#include "linux-dmabuf-unstable-v1-client-protocol.h"
+#include "presentation-time-client-protocol.h"
+#include "shared/client-buffer-util.h"
+#include "single-pixel-buffer-v1-client-protocol.h"
 #include "weston-test-runner.h"
 #include "weston-test-client-protocol.h"
 #include "viewporter-client-protocol.h"
 #include "weston-output-capture-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 #include "weston-testsuite-data.h"
+#include "fifo-v1-client-protocol.h"
+#include "commit-timing-v1-client-protocol.h"
 
 struct client {
 	struct wl_display *wl_display;
@@ -53,8 +59,17 @@ struct client {
 
 	struct wl_registry *wl_registry;
 	struct wl_compositor *wl_compositor;
+	struct wl_subcompositor *wl_subcompositor;
 	struct wl_shm *wl_shm;
+	struct zwp_linux_dmabuf_v1 *dmabuf;
+	struct wp_presentation *presentation;
+	struct wp_single_pixel_buffer_manager_v1 *single_pixel_manager;
+	struct wp_viewporter *viewporter;
+	struct wp_color_representation_manager_v1 *color_representation;
+
 	struct test *test;
+	struct wp_fifo_manager_v1 *fifo_manager;
+	struct wp_commit_timing_manager_v1 *commit_timing_manager;
 	/* the seat that is actually used for input events */
 	struct input *input;
 	/* server can have more wl_seats. We need keep them all until we
@@ -65,9 +80,14 @@ struct client {
 	struct wl_list inputs;
 	struct output *output;
 	struct surface *surface;
-	int has_argb;
+	struct wl_array shm_formats;
+	struct wl_array drm_formats;
+	struct wl_array coefficients_and_ranges;
 	struct wl_list global_list;
 	struct wl_list output_list; /* struct output::link */
+
+	clockid_t presentation_clock;
+	bool has_presentation_clock;
 };
 
 struct global {
@@ -169,8 +189,8 @@ struct output {
 
 struct buffer {
 	struct wl_buffer *proxy;
-	size_t len;
 	pixman_image_t *image;
+	struct client_buffer *buf;
 };
 
 struct surface {
@@ -197,6 +217,11 @@ struct range {
 	int b;
 };
 
+enum screenshot_decoration_mode {
+	INCLUDE_DECORATIONS,
+	NO_DECORATIONS,
+};
+
 struct client *
 create_client(void);
 
@@ -215,12 +240,31 @@ surface_set_opaque_rect(struct surface *surface, const struct rectangle *rect);
 struct client *
 create_client_and_test_surface(int x, int y, int width, int height);
 
+bool
+support_shm_format(struct client *client, uint32_t shm_format);
+
+struct buffer *
+create_buffer(struct client *client, int width, int height, uint32_t drm_format,
+	      enum client_buffer_type buffer_type);
+
 struct buffer *
 create_shm_buffer(struct client *client, int width, int height,
 		  uint32_t drm_format);
 
 struct buffer *
 create_shm_buffer_a8r8g8b8(struct client *client, int width, int height);
+
+struct buffer *
+create_shm_buffer_solid(struct client *client, int width, int height,
+			const pixman_color_t *solid);
+
+bool
+support_drm_format(struct client *client, uint32_t format, uint64_t modifier);
+
+bool
+support_coefficients_and_range(struct client *client,
+			       enum wp_color_representation_surface_v1_coefficients coefficients,
+			       enum wp_color_representation_surface_v1_range range);
 
 void
 buffer_destroy(struct buffer *buf);
@@ -238,7 +282,7 @@ void
 move_client_offscreenable(struct client *client, int x, int y);
 
 #define client_roundtrip(c) do { \
-	assert(wl_display_roundtrip((c)->wl_display) >= 0); \
+	test_assert_int_ge(wl_display_roundtrip((c)->wl_display), 0); \
 } while (0)
 
 struct wl_callback *
@@ -247,11 +291,14 @@ frame_callback_set(struct wl_surface *surface, int *done);
 int
 frame_callback_wait_nofail(struct client *client, int *done);
 
-#define frame_callback_wait(c, d) assert(frame_callback_wait_nofail((c), (d)))
+#define frame_callback_wait(c, d) test_assert_true(frame_callback_wait_nofail((c), (d)))
 
 void
 expect_protocol_error(struct client *client,
 		      const struct wl_interface *intf, uint32_t code);
+
+const char *
+reference_path(void);
 
 char *
 screenshot_reference_filename(const char *basename, uint32_t seq);
@@ -275,6 +322,9 @@ output_filename_for_test_case(const char *suffix, uint32_t seq_number,
 FILE *
 fopen_dump_file(const char *suffix);
 
+size_t
+read_blob_from_file(const char *fname, char **data_out);
+
 bool
 check_images_match(pixman_image_t *img_a, pixman_image_t *img_b,
 		   const struct rectangle *clip,
@@ -292,12 +342,14 @@ pixman_image_t *
 load_image_from_png(const char *fname);
 
 struct buffer *
-capture_screenshot_of_output(struct client *client, const char *output_name);
+capture_screenshot_of_output(struct client *client, const char *output_name,
+			     enum screenshot_decoration_mode include_decorations);
 
 struct buffer *
 client_capture_output(struct client *client,
 		      struct output *output,
-		      enum weston_capture_v1_source src);
+		      enum weston_capture_v1_source src,
+		      enum client_buffer_type buffer_type);
 
 pixman_image_t *
 image_convert_to_a8r8g8b8(pixman_image_t *image);
@@ -314,7 +366,8 @@ verify_screen_content(struct client *client,
 		      const char *ref_image,
 		      int ref_seq_no,
 		      const struct rectangle *clip,
-		      int seq_no, const char *output_name);
+		      int seq_no, const char *output_name,
+		      enum screenshot_decoration_mode include_decorations);
 
 struct buffer *
 client_buffer_from_image_file(struct client *client,
@@ -372,5 +425,26 @@ void
 client_release_breakpoint(struct client *client,
 			  struct wet_testsuite_data *suite_data,
 			  struct wet_test_active_breakpoint *active_bp);
+void *
+get_resource_data_from_proxy(struct wet_testsuite_data *suite_data,
+			     struct wl_proxy *proxy);
+void
+assert_resource_is_proxy(struct wet_testsuite_data *suite_data,
+			 struct wl_resource *r, void *p);
+void
+assert_output_matches(struct wet_testsuite_data *suite_data,
+		      struct weston_output *s, struct output *c);
+void
+assert_surface_matches(struct wet_testsuite_data *suite_data,
+		       struct weston_surface *s, struct surface *c);
+
+struct wl_subcompositor *
+client_get_subcompositor(struct client *client);
+
+struct wp_presentation *
+client_get_presentation(struct client *client);
+
+clockid_t
+client_get_presentation_clock(struct client *client);
 
 #endif

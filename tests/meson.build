@@ -30,6 +30,17 @@ lib_test_client = static_library(
 	[
 		'weston-test-client-helper.c',
 		'weston-test-fixture-compositor.c',
+		'xdg-client-helper.c',
+		color_representation_v1_client_protocol_h,
+		color_representation_v1_protocol_c,
+		commit_timing_v1_client_protocol_h,
+		commit_timing_v1_protocol_c,
+		fifo_v1_client_protocol_h,
+		fifo_v1_protocol_c,
+		presentation_time_client_protocol_h,
+		presentation_time_protocol_c,
+		single_pixel_buffer_v1_client_protocol_h,
+		single_pixel_buffer_v1_protocol_c,
 		weston_test_client_protocol_h,
 		weston_test_protocol_c,
 		weston_output_capture_client_protocol_h,
@@ -43,6 +54,7 @@ lib_test_client = static_library(
 	],
 	include_directories: common_inc,
 	dependencies: [
+		dep_client_buffer,
 		dep_libshared,
 		dep_wayland_client,
 		dep_libexec_weston,
@@ -74,7 +86,7 @@ lib_lcms_util = static_library(
 	[ 'lcms_util.c' ],
 	include_directories: common_inc,
 	dependencies: [
-		dep_lcms2, dep_libm, dep_wayland_server
+		dep_lcms2, dep_libm, dep_wayland_server, dep_pixman
 	],
 	build_by_default: false,
 	install: false,
@@ -99,49 +111,6 @@ exe_plugin_test = shared_library(
 	install: false,
 )
 
-deps_zuc = [ dep_libshared ]
-config_h.set10('ENABLE_JUNIT_XML', get_option('test-junit-xml'))
-if get_option('test-junit-xml')
-	d = dependency('libxml-2.0', version: '>= 2.6', required: false)
-	if not d.found()
-		error('JUnit XML support requires libxml-2.0 >= 2.6 which was not found. Or, you can use \'-Dtest-junit-xml=false\'.')
-	endif
-	deps_zuc += d
-endif
-
-lib_zuc = static_library(
-	'zunitc',
-	'../tools/zunitc/inc/zunitc/zunitc.h',
-	'../tools/zunitc/inc/zunitc/zunitc_impl.h',
-	'../tools/zunitc/src/zuc_base_logger.c',
-	'../tools/zunitc/src/zuc_base_logger.h',
-	'../tools/zunitc/src/zuc_context.h',
-	'../tools/zunitc/src/zuc_event.h',
-	'../tools/zunitc/src/zuc_event_listener.h',
-	'../tools/zunitc/src/zuc_junit_reporter.c',
-	'../tools/zunitc/src/zuc_junit_reporter.h',
-	'../tools/zunitc/src/zuc_types.h',
-	'../tools/zunitc/src/zunitc_impl.c',
-	include_directories: [ common_inc, include_directories('../tools/zunitc/inc') ],
-	dependencies: deps_zuc,
-)
-dep_zuc = declare_dependency(
-	link_with: lib_zuc,
-	dependencies: dep_libshared,
-	include_directories: include_directories('../tools/zunitc/inc')
-)
-
-lib_zucmain = static_library(
-	'zunitcmain',
-	'../tools/zunitc/src/main.c',
-	include_directories: [ common_inc, include_directories('../tools/zunitc/inc') ],
-	dependencies: [ dep_libshared, dep_zuc ],
-)
-dep_zucmain = declare_dependency(
-	link_with: lib_zucmain,
-	dependencies: dep_zuc
-)
-
 tests = [
 	{
 		'name': 'alpha-blending',
@@ -151,9 +120,46 @@ tests = [
 	{	'name': 'bad-buffer', },
 	{	'name': 'buffer-transforms', },
 	{
+		'name': 'client-buffer',
+		'dep_objs': [
+			dep_libdrm_headers,
+			dep_libm,
+		],
+	},
+	{
+		'name': 'color-math',
+		'dep_objs': dep_libm,
+	},
+	{	'name': 'color-effects', },
+	{
 		'name': 'color-metadata-errors',
 		'dep_objs': dep_libexec_weston,
 	},
+	{
+		'name': 'color-output-parsing',
+		'dep_objs': [
+			dep_libexec_weston,
+			dep_libdisplay_info,
+		],
+	},
+	{	'name': 'color-representation-drm',
+		'sources': [
+			'color-representation-common.c',
+			'color-representation-common.h',
+			'color-representation-drm-test.c',
+		],
+		'run_exclusive': true
+	},
+	{	'name': 'color-representation-renderer',
+		'sources': [
+			'color-representation-common.c',
+			'color-representation-common.h',
+			'color-representation-renderer-test.c',
+		],
+	},
+	{	'name': 'color-representation-protocol', },
+	{	'name': 'commit-timing', },
+	{	'name': 'config-parser', },
 	{
 		'name': 'constraints',
 		'sources': [
@@ -167,10 +173,12 @@ tests = [
 		'name': 'drm-formats',
 		'dep_objs': dep_libdrm_headers,
 	},
+	{	'name': 'drm-offload', 'run_exclusive': true },
 	{	'name': 'drm-smoke', 'run_exclusive': true },
 	{	'name': 'drm-writeback-screenshot', 'run_exclusive': true },
 	{	'name': 'event', },
-	{	'name': 'internal-screenshot', },
+	{	'name': 'fifo', },
+	{	'name': 'idalloc', },
 	{
 		'name': 'keyboard',
 		'sources': [
@@ -181,13 +189,9 @@ tests = [
 		],
 	},
 	{
-		'name': 'kiosk-shell',
-		'sources': [
-			'kiosk-shell-test.c',
-			xdg_shell_client_protocol_h,
-			xdg_shell_protocol_c,
-		],
-        },
+		'name': 'linalg',
+		'dep_objs': [ dep_libm ]
+	},
 	{
 		'name': 'linux-explicit-synchronization',
 		'sources': [
@@ -228,14 +232,7 @@ tests = [
 		],
 	},
 	{	'name': 'pointer-shot', },
-	{
-		'name': 'presentation',
-		'sources': [
-			'presentation-test.c',
-			presentation_time_client_protocol_h,
-			presentation_time_protocol_c,
-		],
-	},
+	{	'name': 'presentation', },
 	{
 		'name': 'roles',
 		'sources': [
@@ -244,27 +241,13 @@ tests = [
 			xdg_shell_protocol_c,
 		],
 	},
-	{
-		'name': 'single-pixel-buffer',
-		'sources': [
-			'single-pixel-buffer-test.c',
-			single_pixel_buffer_v1_client_protocol_h,
-			single_pixel_buffer_v1_protocol_c,
-		]
-	},
+	{	'name': 'single-pixel-buffer', },
 	{	'name': 'string', },
 	{	'name': 'subsurface', },
 	{	'name': 'subsurface-shot', },
 	{	'name': 'surface', },
 	{	'name': 'surface-global', },
-	{
-		'name': 'text',
-		'sources': [
-			'text-test.c',
-			text_input_unstable_v1_client_protocol_h,
-			text_input_unstable_v1_protocol_c,
-		],
-	},
+	{	'name': 'timespec', },
 	{
 		'name': 'touch',
 		'sources': [
@@ -276,13 +259,6 @@ tests = [
 	},
 	{	'name': 'viewporter', },
 	{	'name': 'viewporter-shot', },
-	{
-		'name': 'yuv-buffer',
-		'dep_objs': [
-			dep_libdrm_headers,
-			dep_libm,
-		],
-	},
 	{	'name': 'safe-signal', },
 	{	'name': 'safe-signal-output-removal',
 		'sources': [
@@ -328,6 +304,13 @@ if get_option('color-management-lcms')
 			],
 			'dep_objs': [ dep_lcms_util ]
 		},
+		{	'name': 'color-management-parametric',
+			'sources': [
+				'color-management-parametric-test.c',
+				color_management_v1_client_protocol_h,
+				color_management_v1_protocol_c,
+			],
+		},
 		{	'name': 'color-metadata-parsing' },
 		{
 			'name': 'lcms-util',
@@ -335,19 +318,6 @@ if get_option('color-management-lcms')
 		},
 	]
 endif
-
-
-tests_standalone = [
-	['config-parser', [], [ dep_zucmain ]],
-	['timespec', [], [ dep_zucmain ]],
-	['zuc',
-		[
-			'../tools/zunitc/test/fixtures_test.c',
-			'../tools/zunitc/test/zunitc_test.c'
-		],
-		[ dep_zucmain ]
-	],
-]
 
 if get_option('xwayland')
 	xcb_dep = dependency('xcb', required: false)
@@ -390,6 +360,20 @@ surface_screenshot_test = shared_library(
 	install: false,
 )
 
+if get_option('shell-desktop')
+	tests += [
+		{	'name': 'internal-screenshot', },
+		{
+			'name': 'text',
+			'sources': [
+				'text-test.c',
+				text_input_unstable_v1_client_protocol_h,
+				text_input_unstable_v1_protocol_c,
+			],
+		},
+	]
+endif
+
 if get_option('shell-ivi')
 	ivi_layout_test_plugin = shared_library(
 		'test-ivi-layout',
@@ -427,10 +411,37 @@ if get_option('shell-ivi')
 	]
 endif
 
+if get_option('shell-kiosk')
+	tests += [
+		{
+			'name': 'kiosk-shell',
+			'sources': [
+				'kiosk-shell-test.c',
+				xdg_shell_client_protocol_h,
+				xdg_shell_protocol_c,
+			],
+		},
+	]
+endif
+
+if get_option('shell-lua')
+	tests += [
+		{
+			'name': 'lua-shell',
+			'sources': [
+				'lua-shell-test.c',
+				xdg_shell_client_protocol_h,
+				xdg_shell_protocol_c,
+			],
+		},
+	]
+endif
+
 test_config_h = configuration_data()
 test_config_h.set_quoted('WESTON_TEST_REFERENCE_PATH', meson.current_source_dir() + '/reference')
 test_config_h.set_quoted('WESTON_MODULE_MAP', env_modmap)
 test_config_h.set_quoted('WESTON_DATA_DIR', join_paths(meson.current_source_dir(), '..', 'data'))
+test_config_h.set_quoted('WESTON_LUA_SHELL_DIR', join_paths(meson.current_source_dir(), '..', 'lua-shell'))
 test_config_h.set_quoted('TESTSUITE_PLUGIN_PATH', exe_plugin_test.full_path())
 test_config_h.set10('WESTON_TEST_SKIP_IS_FAILURE', get_option('test-skip-is-failure'))
 configure_file(output: 'test-config.h', configuration: test_config_h)
@@ -442,7 +453,7 @@ test_env = {}
 # program exit when it scans for leaks. Due to use_tls=0 even more
 # suppressions had to be added.
 # TODO XXX: Try to revert the addition of use_tls=0 when our CI image
-# upgrades from Debian Bookworm to something more recent.
+# upgrades from Debian Trixie to something more recent.
 if get_option('b_sanitize') in ['address', 'address,undefined' ]
   test_env += { 'LSAN_OPTIONS': 'use_tls=0:suppressions=@0@'.format(dir_gitlab_ci / 'leak-sanitizer.supp') }
 endif
@@ -479,42 +490,6 @@ foreach t : tests
 		protocol: 'tap',
 		is_parallel: not run_exclusive
 	)
-endforeach
-
-# FIXME: the multiple loops is lame. rethink this.
-foreach t : tests_standalone
-	if t[0] != 'zuc'
-		srcs_t = [
-			'@0@-test.c'.format(t.get(0)),
-			weston_test_client_protocol_h,
-		]
-	else
-		srcs_t = []
-	endif
-
-	if t.length() > 1
-		srcs_t += t.get(1)
-	endif
-
-	if t.length() > 2
-		deps_t = t[2]
-	else
-		deps_t = [ dep_test_client ]
-	endif
-
-	exe_t = executable(
-		'test-@0@'.format(t.get(0)),
-		srcs_t,
-		build_by_default: true,
-		include_directories: common_inc,
-		dependencies: deps_t,
-		install: false,
-	)
-
-	# matrix-test is a manual test
-	if t[0] != 'matrix'
-		test(t.get(0), exe_t)
-	endif
 endforeach
 
 if get_option('backend-drm')

@@ -9,10 +9,10 @@ option(
 	description: 'Weston backend: DRM/KMS'
 )
 option(
-	'backend-drm-screencast-vaapi',
+	'deprecated-backend-drm-screencast-vaapi',
 	type: 'boolean',
-	value: true,
-	description: 'DRM/KMS backend support for VA-API screencasting'
+	value: false,
+	description: 'DEPRECATED: DRM/KMS backend support for VA-API screencasting'
 )
 option(
 	'backend-headless',
@@ -33,10 +33,10 @@ option(
 	description: 'Weston backend: RDP remote screensharing'
 )
 option(
-	'screenshare',
+	'deprecated-screenshare',
 	type: 'boolean',
-	value: true,
-	description: 'Compositor: RDP screen-sharing support'
+	value: false,
+	description: 'DEPRECATED: Compositor: RDP screen-sharing support. Requires fullscreen-shell support'
 )
 option(
 	'backend-vnc',
@@ -69,6 +69,13 @@ option(
 	type: 'boolean',
 	value: true,
 	description: 'Weston renderer: EGL / OpenGL ES 2.x'
+)
+
+option(
+	'renderer-vulkan',
+	type: 'boolean',
+	value: true,
+	description: 'Weston renderer: Vulkan'
 )
 
 option(
@@ -112,10 +119,10 @@ option(
 	description: 'Weston shell UI: traditional desktop'
 )
 option(
-	'shell-fullscreen',
+	'deprecated-shell-fullscreen',
 	type: 'boolean',
-	value: true,
-	description: 'Weston shell UI: fullscreen/kiosk'
+	value: false,
+	description: 'DEPRECATED: Weston shell UI: fullscreen/kiosk. For a more modern alternative, use kiosk-shell instead'
 )
 option(
 	'shell-ivi',
@@ -128,6 +135,12 @@ option(
 	type: 'boolean',
 	value: true,
 	description: 'Weston shell UI: kiosk (desktop apps)'
+)
+option(
+	'shell-lua',
+	type: 'boolean',
+	value: true,
+	description: 'Weston shell UI: Lua (programmable)'
 )
 
 option(
@@ -213,4 +226,10 @@ option(
 	type: 'boolean',
 	value: false,
 	description: 'Generate documentation'
+)
+option(
+	'perfetto',
+	type : 'boolean',
+	value : false,
+	description : 'Enable performance analysis with Perfetto.'
 )

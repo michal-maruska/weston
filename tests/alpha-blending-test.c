@@ -31,6 +31,7 @@
 
 #include "weston-test-client-helper.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
 #include "image-iter.h"
 #include "color_util.h"
 
@@ -58,6 +59,11 @@ static const struct setup_args my_setup_args[] = {
 		.renderer = WESTON_RENDERER_GL,
 		.color_management = true,
 		.meta.name = "GL sRGB EOTF"
+	},
+	{
+		.renderer = WESTON_RENDERER_VULKAN,
+		.color_management = false,
+		.meta.name = "Vulkan"
 	},
 };
 
@@ -105,8 +111,8 @@ fill_alpha_pattern(struct buffer *buf)
 	struct image_header ih = image_header_from(buf->image);
 	int y;
 
-	assert(ih.pixman_format == PIXMAN_a8r8g8b8);
-	assert(ih.width == BLOCK_WIDTH * ALPHA_STEPS);
+	test_assert_enum(ih.pixman_format, PIXMAN_a8r8g8b8);
+	test_assert_int_eq(ih.width, BLOCK_WIDTH * ALPHA_STEPS);
 
 	for (y = 0; y < ih.height; y++) {
 		uint32_t *row = image_header_get_row_u32(&ih, y);
@@ -189,12 +195,12 @@ pixels_monotonic(const uint32_t *row, int x)
 }
 
 static void *
-get_middle_row(struct buffer *buf)
+get_middle_row(pixman_image_t *image)
 {
-	struct image_header ih = image_header_from(buf->image);
+	struct image_header ih = image_header_from(image);
 
-	assert(ih.width >= BLOCK_WIDTH * ALPHA_STEPS);
-	assert(ih.height >= BLOCK_WIDTH);
+	test_assert_int_ge(ih.width, BLOCK_WIDTH * ALPHA_STEPS);
+	test_assert_int_ge(ih.height, BLOCK_WIDTH);
 
 	return image_header_get_row_u32(&ih, (BLOCK_WIDTH - 1) / 2);
 }
@@ -215,21 +221,18 @@ check_blend_pattern(struct buffer *bg, struct buffer *fg, struct buffer *shot,
 #endif
 
 	/*
-	 * Allow for +/- 1.5 code points of error in non-linear 8-bit channel
-	 * value. This is necessary for the BLEND_LINEAR case.
+	 * Allow for +/- 1.72 code points of two-norm error in non-linear
+	 * 8-bit channel value. This is necessary for the BLEND_LINEAR case.
 	 *
-	 * With llvmpipe, we could go as low as +/- 0.65 code points of error
-	 * and still pass.
-	 *
-	 * AMD Polaris 11 would be ok with +/- 1.0 code points error threshold
+	 * llvmpipe would be ok with +/- 1.0 code points error threshold
 	 * if not for one particular case of blending (a=254, r=0) into r=255,
-	 * which results in error of 1.29 code points.
+	 * which results in error of 1.701 code points.
 	 */
-	const float tolerance = 1.5f / 255.f;
+	const float tolerance = 1.72f / 255.f;
 
-	uint32_t *bg_row = get_middle_row(bg);
-	uint32_t *fg_row = get_middle_row(fg);
-	uint32_t *shot_row = get_middle_row(shot);
+	uint32_t *bg_row = get_middle_row(bg->image);
+	uint32_t *fg_row = get_middle_row(fg->image);
+	uint32_t *shot_row = get_middle_row(shot->image);
 	struct rgb_diff_stat diffstat = { .dump = dump, };
 	bool ret = true;
 	int x;
@@ -324,8 +327,7 @@ TEST(alpha_blend)
 	subco = bind_to_singleton_global(client, &wl_subcompositor_interface, 1);
 
 	/* background window content */
-	bg = create_shm_buffer_a8r8g8b8(client, width, height);
-	fill_image_with_color(bg->image, &background_color);
+	bg = create_shm_buffer_solid(client, width, height, &background_color);
 
 	/* background window, main surface */
 	client->surface = create_test_surface(client);
@@ -350,11 +352,11 @@ TEST(alpha_blend)
 	/* attach, damage, commit background window */
 	move_client(client, 0, 0);
 
-	shot = capture_screenshot_of_output(client, NULL);
-	assert(shot);
+	shot = capture_screenshot_of_output(client, NULL, NO_DECORATIONS);
+	test_assert_ptr_not_null(shot);
 	match = verify_image(shot->image, "alpha_blend", seq_no, NULL, seq_no);
-	assert(check_blend_pattern(bg, fg, shot, space));
-	assert(match);
+	test_assert_true(check_blend_pattern(bg, fg, shot, space));
+	test_assert_true(match);
 
 	buffer_destroy(shot);
 
@@ -363,4 +365,6 @@ TEST(alpha_blend)
 	buffer_destroy(fg);
 	wl_subcompositor_destroy(subco);
 	client_destroy(client); /* destroys bg */
+
+	return RESULT_OK;
 }

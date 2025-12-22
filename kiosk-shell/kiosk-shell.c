@@ -137,7 +137,7 @@ xwayland_get_xwayland_name(struct kiosk_shell_surface *shsurf, enum window_atom_
 
 static void
 kiosk_shell_surface_set_output(struct kiosk_shell_surface *shsurf,
-			       struct weston_output *output);
+			       struct kiosk_shell_output *shoutput);
 static void
 kiosk_shell_surface_set_parent(struct kiosk_shell_surface *shsurf,
 			       struct kiosk_shell_surface *parent);
@@ -147,9 +147,6 @@ kiosk_shell_output_set_active_surface_tree(struct kiosk_shell_output *shoutput,
 static void
 kiosk_shell_output_raise_surface_subtree(struct kiosk_shell_output *shoutput,
 					 struct kiosk_shell_surface *shroot);
-static struct kiosk_shell_output *
-kiosk_shell_find_shell_output(struct kiosk_shell *shell,
-			      struct weston_output *output);
 
 static void
 kiosk_shell_surface_notify_parent_destroy(struct wl_listener *listener, void *data)
@@ -183,7 +180,7 @@ kiosk_shell_surface_get_parent_root(struct kiosk_shell_surface *shsurf)
 static bool
 kiosk_shell_output_has_app_id(char *config_app_ids, const char *app_id);
 
-static struct weston_output *
+static struct kiosk_shell_output *
 kiosk_shell_surface_find_best_output_for_xwayland(struct kiosk_shell_surface *shsurf)
 {
 	struct kiosk_shell_output *shoutput;
@@ -208,7 +205,7 @@ kiosk_shell_surface_find_best_output_for_xwayland(struct kiosk_shell_surface *sh
 
 			if (found_wm_name && found_wm_class) {
 				shsurf->appid_output_assigned = true;
-				return shoutput->output;
+				return shoutput;
 			}
 		}
 	}
@@ -219,7 +216,7 @@ kiosk_shell_surface_find_best_output_for_xwayland(struct kiosk_shell_surface *sh
 			if (kiosk_shell_output_has_app_id(shoutput->x11_wm_name_app_ids,
 							  wm_name)) {
 				shsurf->appid_output_assigned = true;
-				return shoutput->output;
+				return shoutput;
 			}
 		}
 	}
@@ -229,7 +226,7 @@ kiosk_shell_surface_find_best_output_for_xwayland(struct kiosk_shell_surface *sh
 			if (kiosk_shell_output_has_app_id(shoutput->x11_wm_class_app_ids,
 							  wm_class)) {
 				shsurf->appid_output_assigned = true;
-				return shoutput->output;
+				return shoutput;
 			}
 		}
 	}
@@ -237,7 +234,7 @@ kiosk_shell_surface_find_best_output_for_xwayland(struct kiosk_shell_surface *sh
 	return NULL;
 }
 
-static struct weston_output *
+static struct kiosk_shell_output *
 kiosk_shell_surface_find_best_output(struct kiosk_shell_surface *shsurf)
 {
 	struct weston_output *output;
@@ -255,14 +252,14 @@ kiosk_shell_surface_find_best_output(struct kiosk_shell_surface *shsurf)
 		wl_list_for_each(shoutput, &shsurf->shell->output_list, link) {
 			if (kiosk_shell_output_has_app_id(shoutput->app_ids, app_id)) {
 				shsurf->appid_output_assigned = true;
-				return shoutput->output;
+				return shoutput;
 			}
 		}
 	}
 
-	output = kiosk_shell_surface_find_best_output_for_xwayland(shsurf);
-	if (output)
-		return output;
+	shoutput = kiosk_shell_surface_find_best_output_for_xwayland(shsurf);
+	if (shoutput)
+		return shoutput;
 
 	/* Group all related windows in the same output. */
 	root = kiosk_shell_surface_get_parent_root(shsurf);
@@ -271,20 +268,20 @@ kiosk_shell_surface_find_best_output(struct kiosk_shell_surface *shsurf)
 
 	output = weston_shell_utils_get_focused_output(shsurf->shell->compositor);
 	if (output)
-		return output;
+		return weston_output_get_shell_private(output);
 
 	output = weston_shell_utils_get_default_output(shsurf->shell->compositor);
 	if (output)
-		return output;
+		return weston_output_get_shell_private(output);
 
 	return NULL;
 }
 
 static void
 kiosk_shell_surface_set_output(struct kiosk_shell_surface *shsurf,
-			       struct weston_output *output)
+			       struct kiosk_shell_output *shoutput)
 {
-	shsurf->output = output;
+	shsurf->output = shoutput;
 
 	if (shsurf->output_destroy_listener.notify) {
 		wl_list_remove(&shsurf->output_destroy_listener.link);
@@ -296,39 +293,39 @@ kiosk_shell_surface_set_output(struct kiosk_shell_surface *shsurf,
 
 	shsurf->output_destroy_listener.notify =
 		kiosk_shell_surface_notify_output_destroy;
-	wl_signal_add(&shsurf->output->destroy_signal,
+	wl_signal_add(&shsurf->output->output->destroy_signal,
 		      &shsurf->output_destroy_listener);
 }
 
 static void
 kiosk_shell_surface_set_fullscreen(struct kiosk_shell_surface *shsurf,
-				   struct weston_output *output)
+				   struct kiosk_shell_output *shoutput)
 {
-	if (!output)
-		output = kiosk_shell_surface_find_best_output(shsurf);
+	if (!shoutput)
+		shoutput = kiosk_shell_surface_find_best_output(shsurf);
 
-	kiosk_shell_surface_set_output(shsurf, output);
+	kiosk_shell_surface_set_output(shsurf, shoutput);
 
 	weston_desktop_surface_set_fullscreen(shsurf->desktop_surface, true);
 	if (shsurf->output)
 		weston_desktop_surface_set_size(shsurf->desktop_surface,
-						shsurf->output->width,
-						shsurf->output->height);
+						shsurf->output->output->width,
+						shsurf->output->output->height);
 }
 
 static void
 kiosk_shell_surface_set_maximized(struct kiosk_shell_surface *shsurf)
 {
-	struct weston_output *output =
+	struct kiosk_shell_output *shoutput =
 		kiosk_shell_surface_find_best_output(shsurf);
 
-	kiosk_shell_surface_set_output(shsurf, output);
+	kiosk_shell_surface_set_output(shsurf, shoutput);
 
 	weston_desktop_surface_set_maximized(shsurf->desktop_surface, true);
 	if (shsurf->output)
 		weston_desktop_surface_set_size(shsurf->desktop_surface,
-						shsurf->output->width,
-						shsurf->output->height);
+						shsurf->output->output->width,
+						shsurf->output->output->height);
 }
 
 static void
@@ -382,9 +379,7 @@ static void
 kiosk_shell_surface_set_parent(struct kiosk_shell_surface *shsurf,
 			       struct kiosk_shell_surface *parent)
 {
-	struct kiosk_shell_output *shoutput =
-		kiosk_shell_find_shell_output(shsurf->shell,
-					      shsurf->output);
+	struct kiosk_shell_output *shoutput = shsurf->output;
 	struct kiosk_shell_surface *shroot = parent ?
 		kiosk_shell_surface_get_parent_root(parent) :
 		kiosk_shell_surface_get_parent_root(shsurf);
@@ -436,20 +431,22 @@ static void
 kiosk_shell_surface_reconfigure_for_output(struct kiosk_shell_surface *shsurf)
 {
 	struct weston_desktop_surface *desktop_surface;
+	struct weston_output *w_output;
 
 	if (!shsurf->output)
 		return;
 
+	w_output = shsurf->output->output;
 	desktop_surface = shsurf->desktop_surface;
 
 	if (weston_desktop_surface_get_maximized(desktop_surface) ||
 	    weston_desktop_surface_get_fullscreen(desktop_surface)) {
 		weston_desktop_surface_set_size(desktop_surface,
-						shsurf->output->width,
-						shsurf->output->height);
+						w_output->width,
+						w_output->height);
 	}
 
-	weston_shell_utils_center_on_output(shsurf->view, shsurf->output);
+	weston_shell_utils_center_on_output(shsurf->view, w_output);
 	weston_view_update_transform(shsurf->view);
 }
 
@@ -530,8 +527,7 @@ kiosk_shell_surface_activate(struct kiosk_shell_surface *shsurf,
 	struct weston_desktop_surface *dsurface = shsurf->desktop_surface;
 	struct weston_surface *surface =
 		weston_desktop_surface_get_surface(dsurface);
-	struct kiosk_shell_output *shoutput =
-		kiosk_shell_find_shell_output(shsurf->shell, shsurf->output);
+	struct kiosk_shell_output *shoutput = shsurf->output;
 
 	/* keyboard focus */
 	weston_view_activate_input(shsurf->view, kiosk_seat->seat, activate_flags);
@@ -824,8 +820,11 @@ kiosk_shell_output_create(struct kiosk_shell *shell, struct weston_output *outpu
 
 	wl_list_insert(shell->output_list.prev, &shoutput->link);
 
+	weston_output_set_shell_private(output, shoutput);
+
 	kiosk_shell_output_recreate_background(shoutput);
 	kiosk_shell_output_configure(shoutput);
+	weston_output_set_ready(output);
 
 	return shoutput;
 }
@@ -870,6 +869,9 @@ find_focus_successor(struct kiosk_shell_surface *shsurf,
 	struct weston_layer *layer;
 	struct weston_view *view;
 
+	if (!shsurf->output)
+		return NULL;
+
 	wl_list_for_each(layer, layers, link) {
 		struct kiosk_shell *shell = shsurf->shell;
 
@@ -885,7 +887,7 @@ find_focus_successor(struct kiosk_shell_surface *shsurf,
 				continue;
 
 			/* pick views only on the same output */
-			if (view->output != shsurf->output)
+			if (view->output != shsurf->output->output)
 				continue;
 
 			view_shsurf = get_kiosk_shell_surface(view->surface);
@@ -947,7 +949,7 @@ desktop_surface_removed(struct weston_desktop_surface *desktop_surface,
 
 		successor = find_focus_successor(shsurf,
 						 kiosk_seat->focused_surface);
-		shoutput = kiosk_shell_find_shell_output(shsurf->shell, shsurf->output);
+		shoutput = shsurf->output;
 		if (shoutput && successor) {
 			enum weston_layer_position succesor_view_layer_pos;
 
@@ -991,17 +993,17 @@ desktop_surface_committed(struct weston_desktop_surface *desktop_surface,
 		return;
 
 	if (!shsurf->appid_output_assigned && app_id) {
-		struct weston_output *output = NULL;
+		struct kiosk_shell_output *shoutput = NULL;
 
 		/* reset previous output being set in _added() as the output is
 		 * being cached */
 		shsurf->output = NULL;
-		output = kiosk_shell_surface_find_best_output(shsurf);
+		shoutput = kiosk_shell_surface_find_best_output(shsurf);
 
-		kiosk_shell_surface_set_output(shsurf, output);
+		kiosk_shell_surface_set_output(shsurf, shoutput);
 		weston_desktop_surface_set_size(shsurf->desktop_surface,
-						shsurf->output->width,
-						shsurf->output->height);
+						shoutput->output->width,
+						shoutput->output->height);
 		/* even if we couldn't find an appid set for a particular
 		 * output still flag the shsurf as to a avoid changing the
 		 * output every time */
@@ -1021,7 +1023,7 @@ desktop_surface_committed(struct weston_desktop_surface *desktop_surface,
 	if (!weston_surface_is_mapped(surface) || (is_resized && is_fullscreen)) {
 		if (is_fullscreen || !shsurf->xwayland.is_set) {
 			weston_shell_utils_center_on_output(shsurf->view,
-							    shsurf->output);
+							    shsurf->output->output);
 		} else {
 			struct weston_coord_surface offset;
 			struct weston_geometry geometry =
@@ -1040,9 +1042,7 @@ desktop_surface_committed(struct weston_desktop_surface *desktop_surface,
 	if (!weston_surface_is_mapped(surface)) {
 		struct weston_seat *seat =
 			get_kiosk_shell_first_seat(shsurf->shell);
-		struct kiosk_shell_output *shoutput =
-			kiosk_shell_find_shell_output(shsurf->shell,
-						      shsurf->output);
+		struct kiosk_shell_output *shoutput = shsurf->output;
 		struct kiosk_shell_seat *kiosk_seat;
 
 		weston_surface_map(surface);
@@ -1134,6 +1134,10 @@ desktop_surface_fullscreen_requested(struct weston_desktop_surface *desktop_surf
 {
 	struct kiosk_shell_surface *shsurf =
 		weston_desktop_surface_get_user_data(desktop_surface);
+	struct kiosk_shell_output *shoutput = NULL;
+
+	if (output)
+		shoutput = weston_output_get_shell_private(output);
 
 	/* We should normally be able to ignore fullscreen requests for
 	 * top-level surfaces, since we set them as fullscreen at creation
@@ -1148,7 +1152,7 @@ desktop_surface_fullscreen_requested(struct weston_desktop_surface *desktop_surf
 	 */
 
 	if (!shsurf->parent || fullscreen)
-		kiosk_shell_surface_set_fullscreen(shsurf, output);
+		kiosk_shell_surface_set_fullscreen(shsurf, shoutput);
 	else
 		kiosk_shell_surface_set_normal(shsurf);
 }
@@ -1231,20 +1235,6 @@ static const struct weston_desktop_api kiosk_shell_desktop_api = {
 /*
  * kiosk_shell
  */
-
-static struct kiosk_shell_output *
-kiosk_shell_find_shell_output(struct kiosk_shell *shell,
-			      struct weston_output *output)
-{
-	struct kiosk_shell_output *shoutput;
-
-	wl_list_for_each(shoutput, &shell->output_list, link) {
-		if (shoutput->output == output)
-			return shoutput;
-	}
-
-	return NULL;
-}
 
 static void
 kiosk_shell_activate_view(struct kiosk_shell *shell,
@@ -1334,7 +1324,7 @@ kiosk_shell_handle_output_resized(struct wl_listener *listener, void *data)
 		container_of(listener, struct kiosk_shell, output_resized_listener);
 	struct weston_output *output = data;
 	struct kiosk_shell_output *shoutput =
-		kiosk_shell_find_shell_output(shell, output);
+		weston_output_get_shell_private(output);
 	struct weston_view *view;
 
 	kiosk_shell_output_recreate_background(shoutput);

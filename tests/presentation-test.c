@@ -29,15 +29,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <assert.h>
 #include <time.h>
 
 #include "shared/helpers.h"
 #include "shared/xalloc.h"
 #include "shared/timespec-util.h"
 #include "weston-test-client-helper.h"
-#include "presentation-time-client-protocol.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
 
 static enum test_result_code
 fixture_setup(struct weston_test_harness *harness)
@@ -51,34 +50,6 @@ fixture_setup(struct weston_test_harness *harness)
 	return weston_test_harness_execute_as_client(harness, &setup);
 }
 DECLARE_FIXTURE_SETUP(fixture_setup);
-
-static struct wp_presentation *
-get_presentation(struct client *client)
-{
-	struct global *g;
-	struct global *global_pres = NULL;
-	struct wp_presentation *pres;
-
-	wl_list_for_each(g, &client->global_list, link) {
-		if (strcmp(g->interface, wp_presentation_interface.name))
-			continue;
-
-		if (global_pres)
-			assert(0 && "multiple presentation objects");
-
-		global_pres = g;
-	}
-
-	assert(global_pres && "no presentation found");
-
-	assert(global_pres->version == 1);
-
-	pres = wl_registry_bind(client->wl_registry, global_pres->name,
-				&wp_presentation_interface, 1);
-	assert(pres);
-
-	return pres;
-}
 
 struct feedback {
 	struct client *client;
@@ -104,7 +75,7 @@ feedback_sync_output(void *data,
 {
 	struct feedback *fb = data;
 
-	assert(fb->result == FB_PENDING);
+	test_assert_enum(fb->result, FB_PENDING);
 
 	if (output)
 		fb->sync_output = output;
@@ -123,7 +94,7 @@ feedback_presented(void *data,
 {
 	struct feedback *fb = data;
 
-	assert(fb->result == FB_PENDING);
+	test_assert_enum(fb->result, FB_PENDING);
 	fb->result = FB_PRESENTED;
 	fb->seq = u64_from_u32s(seq_hi, seq_lo);
 	timespec_from_proto(&fb->time, tv_sec_hi, tv_sec_lo, tv_nsec);
@@ -137,7 +108,7 @@ feedback_discarded(void *data,
 {
 	struct feedback *fb = data;
 
-	assert(fb->result == FB_PENDING);
+	test_assert_enum(fb->result, FB_PENDING);
 	fb->result = FB_DISCARDED;
 }
 
@@ -166,7 +137,8 @@ static void
 feedback_wait(struct feedback *fb)
 {
 	while (fb->result == FB_PENDING) {
-		assert(wl_display_dispatch(fb->client->wl_display) >= 0);
+		if (!test_assert_int_ge(wl_display_dispatch(fb->client->wl_display), 0))
+			break;
 	}
 }
 
@@ -231,8 +203,8 @@ TEST(test_presentation_feedback_simple)
 	struct wp_presentation *pres;
 
 	client = create_client_and_test_surface(100, 50, 123, 77);
-	assert(client);
-	pres = get_presentation(client);
+	test_assert_ptr_not_null(client);
+	pres = client_get_presentation(client);
 
 	wl_surface_attach(client->surface->wl_surface,
 			  client->surface->buffer->proxy, 0, 0);
@@ -251,4 +223,6 @@ TEST(test_presentation_feedback_simple)
 	feedback_destroy(fb);
 	wp_presentation_destroy(pres);
 	client_destroy(client);
+
+	return RESULT_OK;
 }

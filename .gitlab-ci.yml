@@ -1,6 +1,6 @@
 # vim: set expandtab shiftwidth=2 tabstop=8 textwidth=0:
 
-.templates_sha: &template_sha 184ca628f89f3193c249b4e34e45afee2773a833 # see https://docs.gitlab.com/ee/ci/yaml/#includefile
+.templates_sha: &template_sha 32afe5644697e503af18a736587c8619fa036a72 # see https://docs.gitlab.com/ee/ci/yaml/#includefile
 # This file uses the freedesktop ci-templates to build Weston and run our
 # tests in CI.
 #
@@ -43,7 +43,7 @@
 variables:
   FDO_UPSTREAM_REPO: wayland/weston
   FDO_REPO_SUFFIX: "$BUILD_OS-$FDO_DISTRIBUTION_VERSION/$BUILD_ARCH"
-  FDO_DISTRIBUTION_TAG: '2024-08-14-00-freerdp3.x'
+  FDO_DISTRIBUTION_TAG: '2025-12-19-mesa-25.3.2'
 
 
 include:
@@ -66,6 +66,11 @@ include:
     # we need a default case though, so all the rest still run
     - when: on_success
 
+default:
+  retry:
+    max: 2
+    when: runner_system_failure
+
 .merge-rules:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -79,7 +84,7 @@ stages:
   - "Pre Base container"
   - "Base container"
   - "Full build and test"
-  - "No-GL build and test"
+  - "No-GL/Vulkan build and test"
   - "Other builds"
   - pages
 
@@ -88,20 +93,23 @@ stages:
 .os-debian-lts:
   variables:
     BUILD_OS: debian
-    LLVM_VERSION: 11
+    LLVM_VERSION: 15
+    USE_DEBIAN_BACKPORTS: y
+    PACKAGES_SPECIFIC: vulkan-validationlayers-dev
     FREERDP_VERSION: 2
-    FDO_DISTRIBUTION_VERSION: bullseye
-    FDO_DISTRIBUTION_EXEC: 'env FDO_CI_CONCURRENT=${FDO_CI_CONCURRENT} BUILD_ARCH=${BUILD_ARCH} KERNEL_IMAGE=${KERNEL_IMAGE} KERNEL_DEFCONFIG=${KERNEL_DEFCONFIG} LLVM_VERSION=${LLVM_VERSION} FDO_DISTRIBUTION_VERSION=${FDO_DISTRIBUTION_VERSION} bash .gitlab-ci/debian-install.sh'
+    FDO_DISTRIBUTION_VERSION: bookworm
+    FDO_DISTRIBUTION_EXEC: 'env FDO_CI_CONCURRENT=${FDO_CI_CONCURRENT} BUILD_ARCH=${BUILD_ARCH} KERNEL_IMAGE=${KERNEL_IMAGE} KERNEL_DEFCONFIG=${KERNEL_DEFCONFIG} LLVM_VERSION=${LLVM_VERSION} FDO_DISTRIBUTION_VERSION=${FDO_DISTRIBUTION_VERSION} PACKAGES_SPECIFIC="${PACKAGES_SPECIFIC}" bash .gitlab-ci/debian-install.sh'
 
 .os-debian:
   variables:
     BUILD_OS: debian
-    LLVM_VERSION: 15
+    LLVM_VERSION: 19
     FREERDP_VERSION: 3
-    USE_BOOKWORM_BACKPORTS: y
-    # If you upgrade from bookworm, see the use_tls=0 notes in tests/meson.build.
-    FDO_DISTRIBUTION_VERSION: bookworm
-    FDO_DISTRIBUTION_EXEC: 'env FDO_CI_CONCURRENT=${FDO_CI_CONCURRENT} BUILD_ARCH=${BUILD_ARCH} KERNEL_IMAGE=${KERNEL_IMAGE} KERNEL_DEFCONFIG=${KERNEL_DEFCONFIG} LLVM_VERSION=${LLVM_VERSION} FDO_DISTRIBUTION_VERSION=${FDO_DISTRIBUTION_VERSION} bash .gitlab-ci/debian-install.sh'
+    USE_DEBIAN_BACKPORTS: y
+    PACKAGES_SPECIFIC: vulkan-utility-libraries-dev libpolly-19-dev libclang-rt-19-dev python3-standard-imghdr
+    # If you upgrade from trixie, see the use_tls=0 notes in tests/meson.build.
+    FDO_DISTRIBUTION_VERSION: trixie
+    FDO_DISTRIBUTION_EXEC: 'env FDO_CI_CONCURRENT=${FDO_CI_CONCURRENT} BUILD_ARCH=${BUILD_ARCH} KERNEL_IMAGE=${KERNEL_IMAGE} KERNEL_DEFCONFIG=${KERNEL_DEFCONFIG} LLVM_VERSION=${LLVM_VERSION} FDO_DISTRIBUTION_VERSION=${FDO_DISTRIBUTION_VERSION} PACKAGES_SPECIFIC="${PACKAGES_SPECIFIC}" bash .gitlab-ci/debian-install.sh'
 
 # Does not inherit .default-rules as we only want it to run in MR context.
 check-commit:
@@ -111,7 +119,6 @@ check-commit:
   stage: "Merge request checks"
   script:
     - ci-fairy check-commits --signed-off-by --junit-xml=results.xml
-    - ci-fairy check-merge-request --require-allow-collaboration --junit-xml=results.xml
   variables:
     GIT_DEPTH: 100
   artifacts:
@@ -139,12 +146,14 @@ check-commit:
     - .os-debian-lts
   variables:
     BUILD_ARCH: "armv7"
+    FDO_DISTRIBUTION_PLATFORM: "linux/arm/v7"
 
 .debian-armv7:
   extends:
     - .os-debian
   variables:
     BUILD_ARCH: "armv7"
+    FDO_DISTRIBUTION_PLATFORM: "linux/arm/v7"
     # Armv7 doesn't have freerdp3 in bookworm-backports so we don't build FreeRDP
     MESON_DIST_OPTIONS: "-Dbackend-rdp=false"
     # Inhibit installation of freerdp-dev
@@ -211,8 +220,6 @@ armv7-debian-lts-container_prep:
     - .fdo.container-build@debian
   tags:
     - aarch64
-  variables:
-    FDO_BASE_IMAGE: "arm32v7/debian:$FDO_DISTRIBUTION_VERSION"
   needs:
     - job: base-container-pre
   timeout: 30m
@@ -225,8 +232,6 @@ armv7-debian-container_prep:
     - .fdo.container-build@debian
   tags:
     - aarch64
-  variables:
-    FDO_BASE_IMAGE: "arm32v7/debian:$FDO_DISTRIBUTION_VERSION"
   needs:
     - job: base-container-pre
   timeout: 30m
@@ -262,17 +267,23 @@ aarch64-debian-container_prep:
   timeout: 15m
   variables:
     BUILDDIR: $CI_PROJECT_DIR/build-weston-$CI_JOB_NAME
+    BUILDDIR_WESTINY: $CI_PROJECT_DIR/build-westiny-$CI_JOB_NAME
     PREFIX: $CI_PROJECT_DIR/prefix-weston-$CI_JOB_NAME
+    PREFIX_WESTINY: $CI_PROJECT_DIR/prefix-westiny-$CI_JOB_NAME
   before_script:
   - export PATH=~/.local/bin:$PATH
   - export XDG_RUNTIME_DIR="$(mktemp -p $(pwd) -d xdg-runtime-XXXXXX)"
   - export TESTS_RES_PATH="$BUILDDIR/tests-res.txt"
+  - export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
   - mkdir "$BUILDDIR" "$PREFIX"
+  - mkdir "$BUILDDIR_WESTINY" "$PREFIX_WESTINY"
 
 .build-with-clang:
   variables:
     CC: clang-$LLVM_VERSION
     CC_LD: lld-$LLVM_VERSION
+    CXX: clang++-$LLVM_VERSION
+    CXX_LD: lld-$LLVM_VERSION
     MESON_TOOLCHAIN_OPTIONS: "$MESON_OPTIONS -Db_lundef=false" # clang+ASan+undef=boom
 
 # Extends the core build templates to also provide for running our testing. We
@@ -282,17 +293,8 @@ aarch64-debian-container_prep:
   extends:
   - .default-rules
   script:
-  - cd "$BUILDDIR"
-  - meson --prefix="$PREFIX" --wrap-mode=nofallback -Db_sanitize=address ${MESON_OPTIONS} ${MESON_TOOLCHAIN_OPTIONS} ${MESON_DIST_OPTIONS} ..
-  - ninja -k0 -j${FDO_CI_CONCURRENT:-4}
-  - ninja install
-  - test -n "${QEMU_SMP}" || QEMU_SMP=${FDO_CI_CONCURRENT:-4}
-  - virtme-run --rw --pwd --kimg /weston-virtme/${KERNEL_IMAGE} --kopt quiet --kopt log_buf_len=2M --script-sh ../.gitlab-ci/virtme-scripts/run-weston-tests.sh --qemu-opts -m 4096 -smp ${QEMU_SMP}
-  - TEST_RES=$(cat $TESTS_RES_PATH)
-  - rm $TESTS_RES_PATH
-  - cp -R /weston-virtme ./
-  - rm weston-virtme/${KERNEL_IMAGE}
-  - exit $TEST_RES
+    "${CI_PROJECT_DIR}/.gitlab-ci/build-and-test.sh"
+
   artifacts:
     name: weston-$CI_COMMIT_SHA
     when: always
@@ -303,7 +305,7 @@ aarch64-debian-container_prep:
     - $BUILDDIR/weston-virtme
     - $PREFIX
     reports:
-      junit: $BUILDDIR/meson-logs/testlog-junit.xml
+      junit: $BUILDDIR/meson-logs/testlog.junit.xml
 
 # Same as above, but without running any tests.
 .build-no-test:
@@ -425,27 +427,34 @@ aarch64-debian-container_prep:
     - job: aarch64-debian-container_prep
       artifacts: false
 
-# Full build, used for testing under KVM.
+# Full build (gcov + perfetto) used for testing under KVM.
 .build-options-full:
   stage: "Full build and test"
   variables:
     MESON_OPTIONS: >
       -Doptimization=0
       -Db_coverage=true
+      --force-fallback-for=perfetto
+      -Dperfetto=true
+      -Dperfetto:werror=false
       -Dwerror=true
       -Dtest-skip-is-failure=true
   after_script:
   - ninja -C "$BUILDDIR" coverage-html > "$BUILDDIR/meson-logs/ninja-coverage-html.txt"
   - ninja -C "$BUILDDIR" coverage-xml
 
+# Full build, (without gcov and perfetto)
+.build-options-full-v2:
+  stage: "Full build and test"
+  variables:
+    MESON_OPTIONS: >
+      -Doptimization=0
+      -Dwerror=true
+      -Dtest-skip-is-failure=true
+
 x86_64-debian-lts-full-build:
   extends:
     - .test-env-debian-lts-x86_64
-    - .build-options-full
-
-x86_64-debian-full-build:
-  extends:
-    - .test-env-debian-x86_64
     - .build-options-full
   artifacts:
     reports:
@@ -453,39 +462,44 @@ x86_64-debian-full-build:
         coverage_format: cobertura
         path: $BUILDDIR/meson-logs/coverage.xml
 
+x86_64-debian-full-build:
+  extends:
+    - .test-env-debian-x86_64
+    - .build-options-full-v2
+
 aarch64-debian-lts-full-build:
   extends:
     - .test-env-debian-lts-aarch64
-    - .build-options-full
+    - .build-options-full-v2
 
 aarch64-debian-full-build:
   extends:
     - .test-env-debian-aarch64
-    - .build-options-full
+    - .build-options-full-v2
 
 x86_64-clang-debian-lts-full-build:
   extends:
     - .test-env-debian-lts-x86_64
     - .build-with-clang
-    - .build-options-full
+    - .build-options-full-v2
 
 x86_64-clang-debian-full-build:
   extends:
     - .test-env-debian-x86_64
     - .build-with-clang
-    - .build-options-full
+    - .build-options-full-v2
 
 aarch64-clang-debian-lts-full-build:
   extends:
     - .test-env-debian-lts-aarch64
     - .build-with-clang
-    - .build-options-full
+    - .build-options-full-v2
 
 aarch64-clang-debian-full-build:
   extends:
     - .test-env-debian-aarch64
     - .build-with-clang
-    - .build-options-full
+    - .build-options-full-v2
 
 # Docs should be invariant on all architectures, so we only do it on Debian
 # x86-64.
@@ -499,9 +513,20 @@ docs-build:
     - .build-env-debian-x86_64
     - .build-no-test
 
-# Building without gl-renderer, to make sure this keeps working.
+# Building without gl-renderer and/or vulkan-renderer, to make sure this keeps working.
+.build-options-no-gl-no-vulkan:
+  stage: "No-GL/Vulkan build and test"
+  variables:
+    MESON_OPTIONS: >
+      -Dsimple-clients=damage,im,shm,touch,dmabuf-v4l
+      -Drenderer-gl=false
+      -Drenderer-vulkan=false
+      -Dremoting=false
+      -Dpipewire=false
+      -Dwerror=true
+
 .build-options-no-gl:
-  stage: "No-GL build and test"
+  stage: "No-GL/Vulkan build and test"
   variables:
     MESON_OPTIONS: >
       -Dsimple-clients=damage,im,shm,touch,dmabuf-v4l
@@ -510,51 +535,72 @@ docs-build:
       -Dpipewire=false
       -Dwerror=true
 
-x86_64-debian-lts-no-gl-build:
+.build-options-no-vulkan:
+  stage: "No-GL/Vulkan build and test"
+  variables:
+    MESON_OPTIONS: >
+      -Dsimple-clients=damage,im,shm,touch,dmabuf-v4l
+      -Drenderer-vulkan=false
+      -Dremoting=false
+      -Dpipewire=false
+      -Dwerror=true
+
+x86_64-debian-lts-no-gl-no-vulkan-build:
   extends:
     - .test-env-debian-lts-x86_64
-    - .build-options-no-gl
+    - .build-options-no-gl-no-vulkan
+
+x86_64-debian-no-gl-no-vulkan-build:
+  extends:
+    - .test-env-debian-x86_64
+    - .build-options-no-gl-no-vulkan
+
+armv7-debian-lts-no-gl-no-vulkan-build:
+  extends:
+    - .build-env-debian-lts-armv7
+    - .build-no-test
+    - .build-options-no-gl-no-vulkan
+
+armv7-debian-no-gl-no-vulkan-build:
+  extends:
+    - .build-env-debian-armv7
+    - .build-no-test
+    - .build-options-no-gl-no-vulkan
+
+armv7-clang-debian-lts-no-gl-no-vulkan-build:
+  extends:
+    - .build-env-debian-lts-armv7
+    - .build-with-clang
+    - .build-no-test
+    - .build-options-no-gl-no-vulkan
+
+armv7-clang-debian-no-gl-no-vulkan-build:
+  extends:
+    - .build-env-debian-armv7
+    - .build-with-clang
+    - .build-no-test
+    - .build-options-no-gl-no-vulkan
+
+aarch64-debian-lts-no-gl-no-vulkan-build:
+  extends:
+    - .test-env-debian-lts-aarch64
+    - .build-options-no-gl-no-vulkan
+
+aarch64-debian-no-gl-no-vulkan-build:
+  extends:
+    - .test-env-debian-aarch64
+    - .build-options-no-gl-no-vulkan
 
 x86_64-debian-no-gl-build:
   extends:
     - .test-env-debian-x86_64
     - .build-options-no-gl
 
-armv7-debian-lts-no-gl-build:
+x86_64-debian-no-vulkan-build:
   extends:
-    - .build-env-debian-lts-armv7
-    - .build-no-test
-    - .build-options-no-gl
+    - .test-env-debian-x86_64
+    - .build-options-no-vulkan
 
-armv7-debian-no-gl-build:
-  extends:
-    - .build-env-debian-armv7
-    - .build-no-test
-    - .build-options-no-gl
-
-armv7-clang-debian-lts-no-gl-build:
-  extends:
-    - .build-env-debian-lts-armv7
-    - .build-with-clang
-    - .build-no-test
-    - .build-options-no-gl
-
-armv7-clang-debian-no-gl-build:
-  extends:
-    - .build-env-debian-armv7
-    - .build-with-clang
-    - .build-no-test
-    - .build-options-no-gl
-
-aarch64-debian-lts-no-gl-build:
-  extends:
-    - .test-env-debian-lts-aarch64
-    - .build-options-no-gl
-
-aarch64-debian-no-gl-build:
-  extends:
-    - .test-env-debian-aarch64
-    - .build-options-no-gl
 
 # Expose docs and coverage reports, so we can show users any changes to these
 # inside their merge requests, letting us check them before merge.
@@ -566,18 +612,18 @@ aarch64-debian-no-gl-build:
 docs-and-coverage:
   extends:
     - .default-rules
-    - .debian-x86_64
+    - .debian-lts-x86_64
     - .fdo.suffixed-image@debian
   stage: pages
   needs:
     - job: docs-build
       artifacts: true
-    - job: x86_64-debian-full-build
+    - job: x86_64-debian-lts-full-build
       artifacts: true
   timeout: 5m
   script:
   - mv prefix-weston-docs-build/share/doc/weston Documentation
-  - mv build-weston-x86_64-debian-full-build/meson-logs/coveragereport Test_Coverage
+  - mv build-weston-x86_64-debian-lts-full-build/meson-logs/coveragereport Test_Coverage
   - rm Test_Coverage/gcov.css
   - cp doc/style/lcov-style.css Test_Coverage/gcov.css
   - cp doc/style/*.png Test_Coverage/

@@ -36,6 +36,7 @@
 #include <libweston/weston-log.h>
 #include "timeline.h"
 #include "weston-log-internal.h"
+#include "weston-trace.h"
 
 /**
  * Timeline itself is not a subscriber but a scope (a producer of data), and it
@@ -376,6 +377,9 @@ weston_timeline_refresh_subscription_objects(struct weston_compositor *wc,
 {
 	struct weston_log_subscription *sub = NULL;
 
+	if (!weston_log_scope_is_enabled(wc->timeline))
+		return;
+
 	while ((sub = weston_log_subscription_iterate(wc->timeline, sub))) {
 		struct weston_timeline_subscription_object *sub_obj;
 
@@ -394,6 +398,36 @@ static const type_func type_dispatch[] = {
 	[TLT_GPU] = emit_gpu_timestamp,
 };
 
+static const char *
+tlp_to_string(enum timeline_point_name tlp)
+{
+	switch (tlp) {
+	case TLP_CORE_FLUSH_DAMAGE:
+		return "core_flush_damage";
+	case TLP_CORE_REPAINT_EXIT_LOOP:
+		return "core_repaint_exit_loop";
+	case TLP_CORE_REPAINT_BEGIN:
+		return "core_repaint_begin";
+	case TLP_CORE_REPAINT_POSTED:
+		return "core_repaint_posted";
+	case TLP_CORE_REPAINT_RESTART:
+		return "core_repaint_restart";
+	case TLP_CORE_REPAINT_FINISHED:
+		return "core_repaint_finished";
+	case TLP_CORE_REPAINT_REQ:
+		return "core_repaint_req";
+	case TLP_CORE_REPAINT_ENTER_LOOP:
+		return "core_repaint_enter_loop";
+	case TLP_CORE_COMMIT_DAMAGE:
+		return "core_commit_damage";
+	case TLP_RENDERER_GPU_BEGIN:
+		return "renderer_gpu_begin";
+	case TLP_RENDERER_GPU_END:
+		return "renderer_gpu_end";
+	}
+	assert(!"not reached");
+}
+
 /** Disseminates the message to all subscriptions of the scope \c
  * timeline_scope
  *
@@ -401,20 +435,21 @@ static const type_func type_dispatch[] = {
  * instance to pass the timeline scope.
  *
  * @param timeline_scope the timeline scope
- * @param name the name of the timeline point. Interpretable by the tool reading
+ * @param tlp_name the name of the timeline point. Interpretable by the tool reading
  * the output (wesgr).
  *
  * @ingroup log
  */
 WL_EXPORT void
 weston_timeline_point(struct weston_log_scope *timeline_scope,
-		      const char *name, ...)
+		      enum timeline_point_name tlp_name, ...)
 {
 	struct timespec ts;
 	enum timeline_type otype;
 	void *obj;
 	char buf[512];
 	struct weston_log_subscription *sub = NULL;
+	const char *name = tlp_to_string(tlp_name);
 
 	if (!weston_log_scope_is_enabled(timeline_scope))
 		return;
@@ -437,7 +472,7 @@ weston_timeline_point(struct weston_log_scope *timeline_scope,
 		fprintf(ctx.cur, "{ \"T\":[%" PRId64 ", %ld], \"N\":\"%s\"",
 				(int64_t)ts.tv_sec, ts.tv_nsec, name);
 
-		va_start(argp, name);
+		va_start(argp, tlp_name);
 		while (1) {
 			otype = va_arg(argp, enum timeline_type);
 			if (otype == TLT_END)
@@ -462,4 +497,25 @@ weston_timeline_point(struct weston_log_scope *timeline_scope,
 		fclose(ctx.cur);
 
 	}
+}
+
+/** Check if weston is tracing performance events
+ *
+ * @param timeline_scope the timeline scope
+ *
+ * Returns true if weston is generating performance events for either perfetto
+ * or the timeline log scope.
+ *
+ * @ingroup log
+ */
+WL_EXPORT bool
+weston_timeline_profiling(struct weston_log_scope *timeline_scope)
+{
+	if (weston_log_scope_is_enabled(timeline_scope))
+		return true;
+
+	if (util_perfetto_is_tracing_enabled())
+		return true;
+
+	return false;
 }

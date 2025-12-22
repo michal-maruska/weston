@@ -46,6 +46,7 @@
 #include <libweston/pixel-formats.h>
 #include "pixman-renderer.h"
 #include "renderer-gl/gl-renderer.h"
+#include "renderer-vulkan/vulkan-renderer.h"
 #include "shared/weston-egl-ext.h"
 
 /* These can be removed when we bump FreeRDP dependency past 3.0.0 in the future */
@@ -57,6 +58,12 @@
 #endif
 
 extern PWtsApiFunctionTable FreeRDP_InitWtsApi(void);
+
+static struct rdp_buffer *
+rdp_buffer_create(struct rdp_output *output);
+
+static void
+rdp_buffer_destroy(struct rdp_buffer *buffer);
 
 static BOOL
 xf_peer_adjust_monitor_layout(freerdp_peer *client);
@@ -261,11 +268,11 @@ rdp_peer_refresh_region(pixman_region32_t *region, freerdp_peer *peer)
 	rdpSettings *settings = peer->context->settings;
 
 	if (freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec))
-		rdp_peer_refresh_rfx(region, output->shadow_surface, peer);
+		rdp_peer_refresh_rfx(region, output->buffer->shadow_surface, peer);
 	else if (freerdp_settings_get_bool(settings, FreeRDP_NSCodec))
-		rdp_peer_refresh_nsc(region, output->shadow_surface, peer);
+		rdp_peer_refresh_nsc(region, output->buffer->shadow_surface, peer);
 	else
-		rdp_peer_refresh_raw(region, output->shadow_surface, peer);
+		rdp_peer_refresh_raw(region, output->buffer->shadow_surface, peer);
 }
 
 static int
@@ -295,7 +302,7 @@ rdp_output_repaint(struct weston_output *output_base)
 	weston_output_flush_damage_for_primary_plane(output_base, &damage);
 
 	ec->renderer->repaint_output(&output->base, &damage,
-				     output->renderbuffer);
+				     output->buffer->rb);
 
 	if (pixman_region32_not_empty(&damage)) {
 		pixman_region32_t transformed_damage;
@@ -346,52 +353,14 @@ rdp_output_set_mode(struct weston_output *base, struct weston_mode *mode)
 	struct weston_output *output = base;
 	struct rdp_peers_item *rdpPeer;
 	rdpSettings *settings;
-	struct weston_renderbuffer *new_renderbuffer;
 
 	mode->refresh = b->rdp_monitor_refresh_rate;
 	weston_output_set_single_mode(base, mode);
 
-	if (base->enabled) {
-		const struct weston_renderer *renderer;
-		pixman_image_t *new_image;
-
+	if (base->enabled)
 		weston_renderer_resize_output(output, &(struct weston_size){
 			.width = output->current_mode->width,
 			.height = output->current_mode->height }, NULL);
-
-		new_image = pixman_image_create_bits(b->formats[0]->pixman_format,
-						     mode->width, mode->height,
-						     NULL, mode->width * 4);
-		renderer = b->compositor->renderer;
-		switch (renderer->type) {
-		case WESTON_RENDERER_PIXMAN: {
-			const struct pixman_renderer_interface *pixman;
-
-			pixman = renderer->pixman;
-			new_renderbuffer =
-				pixman->create_image_from_ptr(output, b->formats[0],
-							      mode->width, mode->height,
-							      pixman_image_get_data(new_image),
-							      mode->width * 4);
-			break;
-		}
-		case WESTON_RENDERER_GL:
-			new_renderbuffer =
-				renderer->gl->create_fbo(output, b->formats[0],
-							 mode->width, mode->height,
-							 pixman_image_get_data(new_image));
-			break;
-		default:
-			unreachable("cannot have auto renderer at runtime");
-		}
-		pixman_image_composite32(PIXMAN_OP_SRC, rdpOutput->shadow_surface,
-					 0, new_image, 0, 0, 0, 0, 0, 0,
-					 mode->width, mode->height);
-		weston_renderbuffer_unref(rdpOutput->renderbuffer);
-		rdpOutput->renderbuffer = new_renderbuffer;
-		pixman_image_unref(rdpOutput->shadow_surface);
-		rdpOutput->shadow_surface = new_image;
-	}
 
 	/* Apparently settings->DesktopWidth is supposed to be primary only.
 	 * For now we only work with a single monitor, so we don't need to
@@ -412,6 +381,19 @@ rdp_output_set_mode(struct weston_output *base, struct weston_mode *mode)
 			freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, mode->height);
 			rdpPeer->peer->context->update->DesktopResize(rdpPeer->peer->context);
 		}
+	}
+}
+
+static void
+rdp_output_set_dpms(struct weston_output *base, enum dpms_enum level)
+{
+	struct rdp_output *output = to_rdp_output(base);
+
+	if (level == WESTON_DPMS_ON)
+		weston_output_schedule_repaint(base);
+	else if (output->base.repaint_status == REPAINT_AWAITING_COMPLETION) {
+		wl_event_source_timer_update(output->finish_frame_timer, 0);
+		weston_output_schedule_repaint_reset(base);
 	}
 }
 
@@ -436,11 +418,88 @@ rdp_head_get_monitor(struct weston_head *base,
 	monitor->desktop_scale = h->config.attributes.desktopScaleFactor;
 }
 
+static bool
+rdp_rb_discarded_cb(weston_renderbuffer_t rb, void *data)
+{
+	struct rdp_buffer *buffer = (struct rdp_buffer *) data;
+	struct rdp_output *output = buffer->output;
+
+	rdp_buffer_destroy(buffer);
+	output->buffer = rdp_buffer_create(output);
+	if (output->buffer == NULL)
+		return false;
+
+	return true;
+}
+
+static struct rdp_buffer *
+rdp_buffer_create(struct rdp_output *output)
+{
+	const struct pixel_format_info *format = output->backend->formats[0];
+	struct weston_renderer *rdr = output->base.compositor->renderer;
+	pixman_image_t *shadow_surface;
+	weston_renderbuffer_t rb;
+	struct rdp_buffer *buffer;
+
+	shadow_surface = pixman_image_create_bits(format->pixman_format,
+						  output->base.current_mode->width,
+						  output->base.current_mode->height,
+						  NULL,
+						  output->base.current_mode->width * 4);
+	buffer = xmalloc(sizeof *buffer);
+
+	rb = rdr->create_renderbuffer(&output->base, format,
+				      pixman_image_get_data(shadow_surface),
+				      output->base.current_mode->width * 4,
+				      rdp_rb_discarded_cb, buffer);
+	if (rb == NULL) {
+		weston_log("Failed to create offscreen renderbuffer.\n");
+		pixman_image_unref(shadow_surface);
+		free(buffer);
+		return NULL;
+	}
+
+	buffer->output = output;
+	buffer->shadow_surface = shadow_surface;
+	buffer->rb = rb;
+
+	return buffer;
+}
+
+static void
+rdp_buffer_destroy(struct rdp_buffer *buffer)
+{
+	struct weston_renderer *rdr = buffer->output->base.compositor->renderer;
+
+	pixman_image_unref(buffer->shadow_surface);
+	rdr->destroy_renderbuffer(buffer->rb);
+	free(buffer);
+}
+
+static void
+rdp_renderer_output_destroy(struct weston_output *base)
+{
+	struct weston_renderer *rdr = base->compositor->renderer;
+
+	switch (rdr->type) {
+	case WESTON_RENDERER_PIXMAN:
+		rdr->pixman->output_destroy(base);
+		break;
+	case WESTON_RENDERER_GL:
+		rdr->gl->output_destroy(base);
+		break;
+	case WESTON_RENDERER_VULKAN:
+		rdr->vulkan->output_destroy(base);
+		break;
+	default:
+		unreachable("cannot have auto renderer at runtime");
+	}
+}
+
 static int
 rdp_output_enable(struct weston_output *base)
 {
 	const struct weston_renderer *renderer = base->compositor->renderer;
-	const struct pixman_renderer_interface *pixman = renderer->pixman;
 	struct rdp_output *output = to_rdp_output(base);
 	struct rdp_backend *b;
 	struct wl_event_loop *loop;
@@ -448,12 +507,6 @@ rdp_output_enable(struct weston_output *base)
 	assert(output);
 
 	b = output->backend;
-
-	output->shadow_surface = pixman_image_create_bits(b->formats[0]->pixman_format,
-							  output->base.current_mode->width,
-							  output->base.current_mode->height,
-							  NULL,
-							  output->base.current_mode->width * 4);
 
 	switch (renderer->type) {
 	case WESTON_RENDERER_PIXMAN: {
@@ -465,23 +518,8 @@ rdp_output_enable(struct weston_output *base)
 			.format = b->formats[0],
 		};
 
-		if (renderer->pixman->output_create(&output->base, &options) < 0) {
+		if (renderer->pixman->output_create(&output->base, &options) < 0)
 			return -1;
-		}
-
-		output->renderbuffer =
-			pixman->create_image_from_ptr(&output->base, options.format,
-						      output->base.current_mode->width,
-						      output->base.current_mode->height,
-						      pixman_image_get_data(output->shadow_surface),
-						      output->base.current_mode->width * 4);
-		if (output->renderbuffer == NULL) {
-			weston_log("Failed to create surface for frame buffer.\n");
-			renderer->pixman->output_destroy(&output->base);
-			pixman_image_unref(output->shadow_surface);
-			output->shadow_surface = NULL;
-			return -1;
-		}
 		break;
 	}
 	case WESTON_RENDERER_GL: {
@@ -496,25 +534,36 @@ rdp_output_enable(struct weston_output *base)
 			},
 		};
 
-		if (renderer->gl->output_fbo_create(&output->base, &options) < 0)
+		if (renderer->gl->output_fbo_create(&output->base, &options) < 0) {
 			return -1;
+		}
+		break;
+	}
+	case WESTON_RENDERER_VULKAN: {
+		const struct vulkan_renderer_surfaceless_options options = {
+			.area = {
+				.width = output->base.current_mode->width,
+				.height = output->base.current_mode->height,
+			},
+			.fb_size = {
+				.width = output->base.current_mode->width,
+				.height = output->base.current_mode->height,
+			},
+		};
 
-		output->renderbuffer =
-			renderer->gl->create_fbo(&output->base, b->formats[0],
-						 output->base.current_mode->width,
-						 output->base.current_mode->height,
-						 pixman_image_get_data(output->shadow_surface));
-		if (output->renderbuffer == NULL) {
-			weston_log("Failed to create surface for frame buffer.\n");
-			renderer->pixman->output_destroy(&output->base);
-			pixman_image_unref(output->shadow_surface);
-			output->shadow_surface = NULL;
+		if (renderer->vulkan->output_surfaceless_create(&output->base, &options) < 0) {
 			return -1;
 		}
 		break;
 	}
 	default:
 		unreachable("cannot have auto renderer at runtime");
+	}
+
+	output->buffer = rdp_buffer_create(output);
+	if (output->buffer == NULL) {
+		rdp_renderer_output_destroy(base);
+		return -1;
 	}
 
 	loop = wl_display_get_event_loop(b->compositor->wl_display);
@@ -526,7 +575,6 @@ rdp_output_enable(struct weston_output *base)
 static int
 rdp_output_disable(struct weston_output *base)
 {
-	struct weston_renderer *renderer = base->compositor->renderer;
 	struct rdp_output *output = to_rdp_output(base);
 
 	assert(output);
@@ -534,21 +582,9 @@ rdp_output_disable(struct weston_output *base)
 	if (!output->base.enabled)
 		return 0;
 
-	weston_renderbuffer_unref(output->renderbuffer);
-	output->renderbuffer = NULL;
-	switch (renderer->type) {
-	case WESTON_RENDERER_PIXMAN:
-		renderer->pixman->output_destroy(&output->base);
-		break;
-	case WESTON_RENDERER_GL:
-		renderer->gl->output_destroy(&output->base);
-		break;
-	default:
-		unreachable("cannot have auto renderer at runtime");
-	}
-	pixman_image_unref(output->shadow_surface);
-	output->shadow_surface = NULL;
-
+	rdp_buffer_destroy(output->buffer);
+	output->buffer = NULL;
+	rdp_renderer_output_destroy(base);
 	wl_event_source_remove(output->finish_frame_timer);
 
 	return 0;
@@ -584,6 +620,7 @@ rdp_output_create(struct weston_backend *backend, const char *name)
 
 	output->base.start_repaint_loop = rdp_output_start_repaint_loop;
 	output->base.repaint = rdp_output_repaint;
+	output->base.set_dpms = rdp_output_set_dpms;
 	output->base.switch_mode = rdp_output_switch_mode;
 
 	output->backend = b;
@@ -985,6 +1022,9 @@ struct rdp_to_xkb_keyboard_layout rdp_keyboards[] = {
 	{KBD_IRISH, 0, 0},
 	{KBD_BOSNIAN_CYRILLIC, "ba", "us"},
 	{KBD_UNITED_STATES_DVORAK, "us", "dvorak"},
+	{KBD_UNITED_STATES_DVORAK_FOR_LEFT_HAND, "us", "dvorak-l"},
+	{KBD_UNITED_STATES_DVORAK_FOR_RIGHT_HAND, "us", "dvorak-r"},
+	{KBD_UNITED_STATES_DVORAK_PROGRAMMER, "us", "dvp"},
 	{KBD_PORTUGUESE_BRAZILIAN_ABNT2, "br", "abnt2"},
 	{KBD_CANADIAN_MULTILINGUAL_STANDARD, "ca", "multix"},
 	{KBD_GAELIC, "ie", "CloGaelach"},
@@ -1989,6 +2029,18 @@ rdp_backend_create(struct weston_compositor *compositor,
 					goto err_compositor;
 			break;
 		}
+		case WESTON_RENDERER_VULKAN: {
+			const struct vulkan_renderer_display_options options = {
+				.formats = b->formats,
+				.formats_count = b->formats_count,
+			};
+
+			if (weston_compositor_init_renderer(compositor,
+							    WESTON_RENDERER_VULKAN,
+							    &options.base) < 0)
+					goto err_compositor;
+			break;
+		}
 		default:
 			weston_log("Unsupported renderer requested\n");
 			goto err_free_strings;
@@ -2113,6 +2165,7 @@ weston_backend_init(struct weston_compositor *compositor,
 		switch (compositor->renderer->type) {
 		case WESTON_RENDERER_PIXMAN:
 		case WESTON_RENDERER_GL:
+		case WESTON_RENDERER_VULKAN:
 			break;
 		default:
 			weston_log("Renderer not supported by RDP backend\n");

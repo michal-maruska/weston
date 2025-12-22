@@ -1,16 +1,16 @@
 project('weston',
-	'c',
-	version: '14.0.2',
+	['c', 'cpp'],
+	version: '14.0.91',
 	default_options: [
 		'warning_level=3',
-		'c_std=gnu99',
+		'c_std=gnu11',
 		'b_lundef=true',
 	],
 	meson_version: '>= 0.63.0',
 	license: 'MIT/Expat',
 )
 
-libweston_major = 14
+libweston_major = 15
 
 # libweston_revision is manufactured to follow the autotools build's
 # library file naming, thanks to libtool
@@ -75,6 +75,16 @@ elif cc.has_header_symbol('sys/mkdev.h', 'major')
 	config_h.set('MAJOR_IN_MKDEV', 1)
 endif
 
+add_project_arguments(global_args, language: 'c')
+
+cpp = meson.get_compiler('cpp')
+
+global_cpp_args = cpp.get_supported_arguments(
+	'-Wno-unused-parameter',
+)
+
+add_project_arguments(global_cpp_args, language: 'cpp')
+
 optional_libc_funcs = [
 	'mkostemp', 'strchrnul', 'initgroups', 'posix_fallocate',
 	'memfd_create', 'unreachable',
@@ -113,6 +123,10 @@ config_h.set('EGL_NO_X11', '1')
 config_h.set('MESA_EGL_NO_X11_HEADERS', '1')
 config_h.set('EGL_NO_PLATFORM_SPECIFIC_TYPES', '1')
 
+config_h.set('VULKAN_NO_X11', '1')
+config_h.set('MESA_VULKAN_NO_X11_HEADERS', '1')
+config_h.set('VULKAN_NO_PLATFORM_SPECIFIC_TYPES', '1')
+
 config_h.set_quoted('PACKAGE_STRING', 'weston @0@'.format(version_weston))
 config_h.set_quoted('PACKAGE_VERSION', version_weston)
 config_h.set_quoted('VERSION', version_weston)
@@ -139,15 +153,17 @@ if not get_option('backend-' + backend_default)
 	error('Backend @0@ was chosen as native but is not being built.'.format(backend_default))
 endif
 
-dep_xkbcommon = dependency('xkbcommon', version: '>= 0.3.0')
-if dep_xkbcommon.version().version_compare('>= 0.5.0')
-	config_h.set('HAVE_XKBCOMMON_COMPOSE', '1')
-endif
-
 dep_wayland_server = dependency('wayland-server', version: '>= 1.22.0')
 dep_wayland_client = dependency('wayland-client', version: '>= 1.22.0')
 dep_pixman = dependency('pixman-1', version: '>= 0.25.2')
+dep_xkbcommon = dependency('xkbcommon', version: '>= 0.5.0')
 dep_libinput = dependency('libinput', version: '>= 1.2.0')
+if dep_xkbcommon.version().version_compare('>= 1.8.0')
+	if dep_libinput.version().version_compare('>= 1.26.0')
+		config_h.set('HAVE_COMPOSE_AND_KANA', '1')
+	endif
+endif
+
 dep_libevdev = dependency('libevdev')
 dep_libm = cc.find_library('m')
 dep_libdl = cc.find_library('dl')
@@ -159,6 +175,16 @@ dep_lcms2 = dependency('lcms2', version: '>= 2.9', required: false)
 if dep_lcms2.found()
 	config_h.set('HAVE_LCMS', '1')
 endif
+
+dep_libdisplay_info = dependency(
+	'libdisplay-info',
+	version: ['>= 0.2.0', '< 0.4.0'],
+	fallback: ['display-info', 'di_dep'],
+	default_options: [
+		'werror=false',
+	],
+	required: true,
+)
 
 prog_python = import('python').find_installation('python3')
 files_xxd_py = files('tools/xxd.py')
@@ -179,6 +205,21 @@ else
 	dep_egl = dependency('', required: false)
 endif
 
+if get_option('renderer-vulkan')
+	dep_vulkan = dependency('vulkan', required: false)
+	if not dep_vulkan.found()
+		error('libweston + vulkan-renderer requires vulkan which was not found. Or, you can use \'-Drenderer-vulkan=false\'.')
+	endif
+
+	prog_glslang = find_program('glslangValidator', required : false)
+	if not prog_glslang.found()
+		error('libweston + vulkan-renderer requires glslangValidator which was not found. Or, you can use \'-Drenderer-vulkan=false\'.')
+	endif
+else
+	dep_vulkan = dependency('', required: false)
+	prog_glslang = find_program('', required : false)
+endif
+
 
 subdir('include')
 subdir('protocol')
@@ -190,6 +231,7 @@ subdir('desktop-shell')
 subdir('fullscreen-shell')
 subdir('ivi-shell')
 subdir('kiosk-shell')
+subdir('lua-shell')
 subdir('remoting')
 subdir('pipewire')
 subdir('clients')

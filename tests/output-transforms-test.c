@@ -31,6 +31,7 @@
 
 #include "weston-test-client-helper.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
 
 #define TRANSFORM(x) WL_OUTPUT_TRANSFORM_ ## x, #x
 #define RENDERERS(s, t)							\
@@ -47,6 +48,13 @@
 		.transform = WL_OUTPUT_TRANSFORM_ ## t,			\
 		.transform_name = #t,					\
 		.meta.name = "GL " #s " " #t,				\
+	},								\
+	{								\
+		.renderer = WESTON_RENDERER_VULKAN,			\
+		.scale = s,						\
+		.transform = WL_OUTPUT_TRANSFORM_ ## t,			\
+		.transform_name = #t,					\
+		.meta.name = "Vulkan " #s " " #t,			\
 	}
 
 struct setup_args {
@@ -122,7 +130,7 @@ TEST_P(output_transform, my_buffer_args)
 	ret = asprintf(&refname, "output_%d-%s_buffer_%d-%s",
 		       oargs->scale, oargs->transform_name,
 		       bargs->scale, bargs->transform_name);
-	assert(ret);
+	test_assert_int_ne(ret, 0);
 
 	testlog("%s: %s\n", get_test_name(), refname);
 
@@ -143,9 +151,12 @@ TEST_P(output_transform, my_buffer_args)
 					bargs->transform);
 	move_client(client, 19, 19);
 
-	match = verify_screen_content(client, refname, 0, NULL, 0, NULL);
-	assert(match);
+	match = verify_screen_content(client, refname, 0, NULL, 0, NULL,
+				      NO_DECORATIONS);
+	test_assert_true(match);
 
 	client_destroy(client);
 	free(refname);
+
+	return RESULT_OK;
 }

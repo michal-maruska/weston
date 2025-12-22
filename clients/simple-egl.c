@@ -564,7 +564,6 @@ init_gl(struct window *window)
 
 	glBindAttribLocation(program, window->gl.pos, "pos");
 	glBindAttribLocation(program, window->gl.col, "color");
-	glLinkProgram(program);
 
 	window->gl.rotation_uniform =
 		glGetUniformLocation(program, "rotation");
@@ -940,10 +939,10 @@ redraw(struct window *window)
 		angle = ((time - window->initial_frame_time) / speed_div)
 			% 360 * M_PI / 180.0;
 	}
-	rotation.d[0] =   cos(angle);
-	rotation.d[2] =   sin(angle);
-	rotation.d[8] =  -sin(angle);
-	rotation.d[10] =  cos(angle);
+	rotation.M.col[0].el[0] =  cos(angle);
+	rotation.M.col[0].el[2] =  sin(angle);
+	rotation.M.col[2].el[0] = -sin(angle);
+	rotation.M.col[2].el[2] =  cos(angle);
 
 	switch (window->buffer_transform) {
 	case WL_OUTPUT_TRANSFORM_FLIPPED:
@@ -982,7 +981,7 @@ redraw(struct window *window)
 	glViewport(0, 0, window->buffer_size.width, window->buffer_size.height);
 
 	glUniformMatrix4fv(window->gl.rotation_uniform, 1, GL_FALSE,
-			   (GLfloat *) rotation.d);
+			   (GLfloat *) rotation.M.colmaj);
 
 	if (window->opaque || window->fullscreen)
 		glClearColor(0.0, 0.0, 0.0, 1);
@@ -1474,15 +1473,10 @@ main(int argc, char **argv)
 	create_surface(&window);
 
 	/* we already have wait_for_configure set after create_surface() */
-	while (running && ret != -1 && window.wait_for_configure) {
+	while (running && ret != -1 && window.wait_for_configure)
 		ret = wl_display_dispatch(display.display);
 
-		/* wait until xdg_surface::configure acks the new dimensions */
-		if (window.wait_for_configure)
-			continue;
-
-		init_gl(&window);
-	}
+	init_gl(&window);
 
 	display.cursor_surface =
 		wl_compositor_create_surface(display.compositor);
@@ -1529,6 +1523,9 @@ out_no_xdg_shell:
 
 	if (display.compositor)
 		wl_compositor_destroy(display.compositor);
+
+	if (display.tearing_manager)
+		wp_tearing_control_manager_v1_destroy(display.tearing_manager);
 
 	if (display.viewporter)
 		wp_viewporter_destroy(display.viewporter);
