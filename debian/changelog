@@ -4,6 +4,7 @@ weston (14.0.91-1) UNRELEASED; urgency=medium
   * Bump SONAME to libweston-15-0
   * Drop patches included in upstream release
   * Disable deprecated screenshare option
+  * Don't install fullscreen-shell and screen-share because deprecated
   * Add libvulkan-dev and glslang-tools in Build-Deps required for
       Vulkan-renderer
   * Add liblua5.4-dev in Build-Deps required for
