@@ -7,8 +7,10 @@ weston (14.0.91-1) UNRELEASED; urgency=medium
   * Don't install fullscreen-shell and screen-share because deprecated
   * Add libvulkan-dev and glslang-tools in Build-Deps required for
       Vulkan-renderer
+  * Install vulkan-renderer in libweston-15-0
   * Add liblua5.4-dev in Build-Deps required for
       lua-shell
+  * Install lua-shell in weston
   * Make tests non fatal for now in debian/rules,
       this will need to be fixed before the version 15.0.0
   * Adjust VCS fields in d/control and d/gbp.conf for experimental

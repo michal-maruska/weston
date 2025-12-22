@@ -8,6 +8,7 @@ usr/lib/*/libweston-15/pipewire-backend.so
 usr/lib/*/libweston-15/pipewire-plugin.so
 usr/lib/*/libweston-15/rdp-backend.so
 usr/lib/*/libweston-15/remoting-plugin.so
+usr/lib/*/libweston-15/vulkan-renderer.so
 [!sparc64] usr/lib/*/libweston-15/vnc-backend.so
 usr/lib/*/libweston-15/wayland-backend.so
 usr/lib/*/libweston-15/x11-backend.so
