@@ -1,4 +1,6 @@
 Version: 5
 
-Template: GitLab
-Dist: https://gitlab.freedesktop.org/wayland/weston
+Source: https://gitlab.freedesktop.org/api/v4/projects/wayland%2Fweston/releases
+Matching-Pattern: https://gitlab.freedesktop.org/wayland/weston/-/releases/?\d[\d.]+/downloads/weston-@ANY_VERSION@\.tar\.xz
+Pgpsigurlmangle: s/$/.sig/
+Searchmode: plain

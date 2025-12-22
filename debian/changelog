@@ -16,6 +16,7 @@ weston (14.0.91-1) UNRELEASED; urgency=medium
       this will need to be fixed before the version 15.0.0
   * Adjust VCS fields in d/control and d/gbp.conf for experimental
   * gbp.conf: add upstream-vcs-tag
+  * Update debian/watch to target the signed tarball
 
  -- Dylan Aïssi <daissi@debian.org>  Mon, 22 Dec 2025 11:22:39 +0100
 
