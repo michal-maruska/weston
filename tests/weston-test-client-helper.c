@@ -45,12 +45,24 @@
 #include "shared/xalloc.h"
 #include <libweston/zalloc.h>
 #include "weston-test-client-helper.h"
+#include "weston-test-assert.h"
 #include "image-iter.h"
 #include "weston-output-capture-client-protocol.h"
+#include "presentation-time-client-protocol.h"
 
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 #define min(a, b) (((a) > (b)) ? (b) : (a))
 #define clip(x, a, b)  min(max(x, a), b)
+
+struct drm_format {
+	uint32_t format;
+	uint64_t modifier;
+};
+
+struct coefficients_and_range {
+	enum wp_color_representation_surface_v1_coefficients coefficients;
+	enum wp_color_representation_surface_v1_range range;
+};
 
 int
 surface_contains(struct surface *surface, int x, int y)
@@ -472,68 +484,82 @@ static const struct wl_surface_listener surface_listener = {
 	surface_leave
 };
 
+bool
+support_shm_format(struct client *client, uint32_t shm_format)
+{
+	uint32_t *p;
+
+	wl_array_for_each(p, &client->shm_formats)
+		if (*p == shm_format)
+			return true;
+
+	return false;
+}
+
 struct buffer *
-create_shm_buffer(struct client *client, int width, int height,
-		  uint32_t drm_format)
+create_buffer(struct client *client, int width, int height, uint32_t drm_format,
+	      enum client_buffer_type buffer_type)
 {
 	const struct pixel_format_info *pfmt;
-	struct wl_shm *shm = client->wl_shm;
 	struct buffer *buf;
-	size_t stride_bytes;
-	struct wl_shm_pool *pool;
-	int fd;
-	void *data;
-	size_t bytes_pp;
 
-	assert(width > 0);
-	assert(height > 0);
+	test_assert_int_gt(width, 0);
+	test_assert_int_gt(height, 0);
 
 	pfmt = pixel_format_get_info(drm_format);
-	assert(pfmt);
-	assert(pixel_format_get_plane_count(pfmt) == 1);
+	test_assert_ptr_not_null(pfmt);
 
 	buf = xzalloc(sizeof *buf);
 
-	bytes_pp = pfmt->bpp / 8;
-	stride_bytes = width * bytes_pp;
-	/* round up to multiple of 4 bytes for Pixman */
-	stride_bytes = (stride_bytes + 3) & ~3u;
-	assert(stride_bytes / bytes_pp >= (unsigned)width);
+	if (buffer_type == CLIENT_BUFFER_TYPE_SHM) {
+		uint32_t shm_format;
 
-	buf->len = stride_bytes * height;
-	assert(buf->len / stride_bytes == (unsigned)height);
+		shm_format = pixel_format_get_shm_format(pfmt);
 
-	fd = os_create_anonymous_file(buf->len);
-	assert(fd >= 0);
+		if (!support_shm_format(client, shm_format))
+		    return NULL;
 
-	data = mmap(NULL, buf->len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-	if (data == MAP_FAILED) {
-		close(fd);
-		assert(data != MAP_FAILED);
+		buf->buf = client_buffer_util_create_shm_buffer(client->wl_shm,
+								pfmt,
+								width,
+								height);
+	} else {
+		test_assert_true(buffer_type == CLIENT_BUFFER_TYPE_DMABUF);
+
+		if (!support_drm_format(client, drm_format, DRM_FORMAT_MOD_LINEAR))
+		    return NULL;
+
+		buf->buf = client_buffer_util_create_dmabuf_buffer(client->wl_display,
+								   client->dmabuf,
+								   pfmt,
+								   width,
+								   height);
 	}
-
-	pool = wl_shm_create_pool(shm, fd, buf->len);
-	buf->proxy = wl_shm_pool_create_buffer(pool, 0, width, height,
-					       stride_bytes,
-					       pixel_format_get_shm_format(pfmt));
-	wl_shm_pool_destroy(pool);
-	close(fd);
+	test_assert_ptr_not_null(buf->buf);
+	buf->proxy = buf->buf->wl_buffer;
 
 	buf->image = pixman_image_create_bits(pfmt->pixman_format,
 					      width, height,
-					      data, stride_bytes);
+					      buf->buf->data,
+					      buf->buf->strides[0]);
 
-	assert(buf->proxy);
-	assert(buf->image);
+	test_assert_ptr_not_null(buf->proxy);
+	test_assert_ptr_not_null(buf->image);
 
 	return buf;
 }
 
 struct buffer *
+create_shm_buffer(struct client *client, int width, int height,
+		  uint32_t drm_format)
+{
+	return create_buffer(client, width, height, drm_format,
+			     CLIENT_BUFFER_TYPE_SHM);
+}
+
+struct buffer *
 create_shm_buffer_a8r8g8b8(struct client *client, int width, int height)
 {
-	assert(client->has_argb);
-
 	return create_shm_buffer(client, width, height, DRM_FORMAT_ARGB8888);
 }
 
@@ -542,13 +568,13 @@ create_pixman_buffer(int width, int height, pixman_format_code_t pixman_format)
 {
 	struct buffer *buf;
 
-	assert(width > 0);
-	assert(height > 0);
+	test_assert_int_gt(width, 0);
+	test_assert_int_gt(height, 0);
 
 	buf = xzalloc(sizeof *buf);
 	buf->image = pixman_image_create_bits(pixman_format,
 					      width, height, NULL, 0);
-	assert(buf->image);
+	test_assert_ptr_not_null(buf->image);
 
 	return buf;
 }
@@ -556,17 +582,10 @@ create_pixman_buffer(int width, int height, pixman_format_code_t pixman_format)
 void
 buffer_destroy(struct buffer *buf)
 {
-	void *pixels;
+	test_assert_true(pixman_image_unref(buf->image));
 
-	pixels = pixman_image_get_data(buf->image);
-
-	if (buf->proxy) {
-		wl_buffer_destroy(buf->proxy);
-		assert(munmap(pixels, buf->len) == 0);
-	}
-
-	assert(pixman_image_unref(buf->image));
-
+	if (buf->buf)
+		client_buffer_util_destroy_buffer(buf->buf);
 	free(buf);
 }
 
@@ -574,13 +593,102 @@ static void
 shm_format(void *data, struct wl_shm *wl_shm, uint32_t format)
 {
 	struct client *client = data;
+	uint32_t *p;
 
-	if (format == WL_SHM_FORMAT_ARGB8888)
-		client->has_argb = 1;
+	p = wl_array_add(&client->shm_formats, sizeof *p);
+	assert(p);
+	*p = format;
 }
 
 struct wl_shm_listener shm_listener = {
 	shm_format
+};
+
+bool
+support_drm_format(struct client *client, uint32_t format, uint64_t modifier)
+{
+	struct drm_format *p;
+
+	wl_array_for_each(p, &client->drm_formats)
+		if (p->format == format && p->modifier == modifier)
+			return true;
+
+	return false;
+}
+
+static void
+dmabuf_modifier(void *data, struct zwp_linux_dmabuf_v1 *zwp_linux_dmabuf,
+		 uint32_t format, uint32_t modifier_hi, uint32_t modifier_lo)
+{
+	struct client *client = data;
+	uint64_t modifier = u64_from_u32s(modifier_hi, modifier_lo);
+	struct drm_format *p;
+
+	p = wl_array_add(&client->drm_formats, sizeof *p);
+	assert(p);
+	p->format = format;
+	p->modifier = modifier;
+}
+
+
+static void
+dmabuf_format(void *data, struct zwp_linux_dmabuf_v1 *zwp_linux_dmabuf,
+              uint32_t format)
+{
+	/* deprecated */
+}
+
+static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
+	dmabuf_format,
+	dmabuf_modifier
+};
+
+bool
+support_coefficients_and_range(struct client *client,
+			       enum wp_color_representation_surface_v1_coefficients coefficients,
+			       enum wp_color_representation_surface_v1_range range)
+{
+	struct coefficients_and_range *p;
+
+	wl_array_for_each(p, &client->coefficients_and_ranges)
+		if (p->coefficients == coefficients && p->range == range)
+			return true;
+
+	return false;
+}
+
+static void
+color_representation_supported_alpha_mode(void *data,
+					  struct wp_color_representation_manager_v1 *wp_color_representation_manager_v1,
+					  uint32_t alpha_mode)
+{
+}
+
+static void
+color_representation_supported_coefficients_and_ranges(void *data,
+						       struct wp_color_representation_manager_v1 *wp_color_representation_manager_v1,
+						       uint32_t coefficients,
+						       uint32_t range)
+{
+	struct client *client = data;
+	struct coefficients_and_range *p;
+
+	p = wl_array_add(&client->coefficients_and_ranges, sizeof *p);
+	assert(p);
+	p->coefficients = coefficients;
+	p->range = range;
+}
+
+static void
+color_representation_done(void *data,
+			  struct wp_color_representation_manager_v1 *wp_color_representation_manager_v1)
+{
+}
+
+static const struct wp_color_representation_manager_v1_listener color_representation_listener = {
+	.supported_alpha_mode = color_representation_supported_alpha_mode,
+	.supported_coefficients_and_ranges = color_representation_supported_coefficients_and_ranges,
+	.done = color_representation_done,
 };
 
 static void
@@ -693,12 +801,12 @@ seat_handle_name(void *data, struct wl_seat *seat, const char *name)
 	struct input *input = data;
 
 	input->seat_name = strdup(name);
-	assert(input->seat_name && "No memory");
+	test_assert_ptr_not_null(input->seat_name);
 
 	/* We only update the devices and set client input for the test seat */
 	if (strcmp(name, "test-seat") == 0) {
-		assert(!input->client->input &&
-		       "Multiple test seats detected!");
+		/* Can't have multiple test seats. */
+		test_assert_ptr_null(input->client->input);
 
 		input_update_devices(input);
 		input->client->input = input;
@@ -790,7 +898,7 @@ static const struct wl_output_listener output_listener = {
 static void
 output_destroy(struct output *output)
 {
-	assert(wl_proxy_get_version((struct wl_proxy *)output->wl_output) >= 3);
+	test_assert_u32_ge(wl_proxy_get_version((struct wl_proxy *)output->wl_output), 3);
 	wl_output_release(output->wl_output);
 	wl_list_remove(&output->link);
 	free(output->name);
@@ -811,7 +919,7 @@ handle_global(void *data, struct wl_registry *registry,
 	global = xzalloc(sizeof *global);
 	global->name = id;
 	global->interface = strdup(interface);
-	assert(interface);
+	test_assert_ptr_not_null(interface);
 	global->version = version;
 	wl_list_insert(client->global_list.prev, &global->link);
 
@@ -826,6 +934,10 @@ handle_global(void *data, struct wl_registry *registry,
 		client->wl_compositor =
 			wl_registry_bind(registry, id,
 					 &wl_compositor_interface, version);
+	} else if (strcmp(interface, wl_subcompositor_interface.name) == 0) {
+		client->wl_subcompositor =
+			wl_registry_bind(registry, id,
+					 &wl_subcompositor_interface, version);
 	} else if (strcmp(interface, "wl_seat") == 0) {
 		input = xzalloc(sizeof *input);
 		input->client = client;
@@ -840,6 +952,32 @@ handle_global(void *data, struct wl_registry *registry,
 			wl_registry_bind(registry, id,
 					 &wl_shm_interface, version);
 		wl_shm_add_listener(client->wl_shm, &shm_listener, client);
+	} else if (strcmp(interface, zwp_linux_dmabuf_v1_interface.name) == 0) {
+		client->dmabuf =
+			wl_registry_bind(registry, id,
+					 &zwp_linux_dmabuf_v1_interface, 3);
+		zwp_linux_dmabuf_v1_add_listener(client->dmabuf,
+						 &dmabuf_listener, client);
+	} else if (strcmp(interface, wp_viewporter_interface.name) == 0) {
+		client->viewporter = wl_registry_bind(registry, id,
+						      &wp_viewporter_interface,
+						      1);
+	} else if (strcmp(interface, wp_presentation_interface.name) == 0) {
+		client->presentation =
+			wl_registry_bind(registry, id,
+					 &wp_presentation_interface, 1);
+	} else if (strcmp(interface, wp_single_pixel_buffer_manager_v1_interface.name) == 0) {
+		client->single_pixel_manager =
+			wl_registry_bind(registry, id,
+					 &wp_single_pixel_buffer_manager_v1_interface,
+					 1);
+	} else if (strcmp(interface, wp_color_representation_manager_v1_interface.name) == 0) {
+		client->color_representation =
+			wl_registry_bind(registry, id,
+					 &wp_color_representation_manager_v1_interface, version);
+		wp_color_representation_manager_v1_add_listener (client->color_representation,
+								 &color_representation_listener,
+								 client);
 	} else if (strcmp(interface, "wl_output") == 0) {
 		output = xzalloc(sizeof *output);
 		output->wl_output =
@@ -856,6 +994,14 @@ handle_global(void *data, struct wl_registry *registry,
 					 &weston_test_interface, version);
 		weston_test_add_listener(test->weston_test, &test_listener, test);
 		client->test = test;
+	} else if (strcmp(interface, wp_fifo_manager_v1_interface.name) == 0) {
+		client->fifo_manager =
+			wl_registry_bind(registry, id,
+					 &wp_fifo_manager_v1_interface, 1);
+	} else if (strcmp(interface, wp_commit_timing_manager_v1_interface.name) == 0) {
+		client->commit_timing_manager =
+			wl_registry_bind(registry, id,
+					 &wp_commit_timing_manager_v1_interface, 1);
 	}
 }
 
@@ -901,7 +1047,9 @@ handle_global_remove(void *data, struct wl_registry *registry, uint32_t name)
 	struct input *input;
 
 	global = client_find_global_with_name(client, name);
-	assert(global && "Request to remove unknown global");
+
+	/* Unknown global. */
+	test_assert_ptr_not_null(global);
 
 	if (strcmp(global->interface, "wl_seat") == 0) {
 		input = client_find_input_with_name(client, name);
@@ -954,8 +1102,11 @@ expect_protocol_error(struct client *client,
 
 	err = wl_display_get_error(client->wl_display);
 
-	assert(err && "Expected protocol error but nothing came");
-	assert(err == EPROTO && "Expected protocol error but got local error");
+	/* Expected protocol error but nothing came. */
+	test_assert_int_ne(err, 0);
+
+	/* Expected protocol error but got local error. */
+	test_assert_enum(err, EPROTO);
 
 	errcode = wl_display_get_protocol_error(client->wl_display,
 						&interface, &id);
@@ -1013,7 +1164,10 @@ create_client(void)
 	/* connect to display */
 	client = xzalloc(sizeof *client);
 	client->wl_display = wl_display_connect(NULL);
-	assert(client->wl_display);
+	test_assert_ptr_not_null(client->wl_display);
+	wl_array_init(&client->shm_formats);
+	wl_array_init(&client->drm_formats);
+	wl_array_init(&client->coefficients_and_ranges);
 	wl_list_init(&client->global_list);
 	wl_list_init(&client->inputs);
 	wl_list_init(&client->output_list);
@@ -1029,20 +1183,21 @@ create_client(void)
 	 * events */
 	client_roundtrip(client);
 
-	/* must have WL_SHM_FORMAT_ARGB32 */
-	assert(client->has_argb);
+	/* must have WL_SHM_FORMAT_*RGB8888 */
+	test_assert_true(support_shm_format(client, WL_SHM_FORMAT_ARGB8888));
+	test_assert_true(support_shm_format(client, WL_SHM_FORMAT_XRGB8888));
 
 	/* must have weston_test interface */
-	assert(client->test);
+	test_assert_ptr_not_null(client->test);
 
 	/* must have an output */
-	assert(client->output);
+	test_assert_ptr_not_null(client->output);
 
 	/* the output must be initialized */
-	assert(client->output->initialized == 1);
+	test_assert_int_eq(client->output->initialized, 1);
 
 	/* must have seat set */
-	assert(client->input);
+	test_assert_ptr_not_null(client->input);
 
 	return client;
 }
@@ -1057,7 +1212,7 @@ create_test_surface(struct client *client)
 	surface->client = client;
 	surface->wl_surface =
 		wl_compositor_create_surface(client->wl_compositor);
-	assert(surface->wl_surface);
+	test_assert_ptr_not_null(surface->wl_surface);
 
 	wl_surface_add_listener(surface->wl_surface, &surface_listener,
 				surface);
@@ -1094,7 +1249,6 @@ create_client_and_test_surface(int x, int y, int width, int height)
 	struct client *client;
 	struct surface *surface;
 	pixman_color_t color = { 16384, 16384, 16384, 16384 }; /* uint16_t */
-	pixman_image_t *solid;
 
 	client = create_client();
 
@@ -1104,18 +1258,7 @@ create_client_and_test_surface(int x, int y, int width, int height)
 
 	surface->width = width;
 	surface->height = height;
-	surface->buffer = create_shm_buffer_a8r8g8b8(client, width, height);
-
-	solid = pixman_image_create_solid_fill(&color);
-	pixman_image_composite32(PIXMAN_OP_SRC,
-				 solid, /* src */
-				 NULL, /* mask */
-				 surface->buffer->image, /* dst */
-				 0, 0, /* src x,y */
-				 0, 0, /* mask x,y */
-				 0, 0, /* dst x,y */
-				 width, height);
-	pixman_image_unref(solid);
+	surface->buffer = create_shm_buffer_solid(client, width, height, &color);
 
 	move_client_frame_sync(client, x, y);
 
@@ -1127,8 +1270,18 @@ client_destroy(struct client *client)
 {
 	int ret;
 
+	if (client->fifo_manager)
+		wp_fifo_manager_v1_destroy(client->fifo_manager);
+
+	if (client->commit_timing_manager)
+		wp_commit_timing_manager_v1_destroy(client->commit_timing_manager);
+
 	if (client->surface)
 		surface_destroy(client->surface);
+
+	wl_array_release(&client->shm_formats);
+	wl_array_release(&client->drm_formats);
+	wl_array_release(&client->coefficients_and_ranges);
 
 	while (!wl_list_empty(&client->inputs)) {
 		input_destroy(container_of(client->inputs.next,
@@ -1152,14 +1305,26 @@ client_destroy(struct client *client)
 
 	if (client->wl_shm)
 		wl_shm_destroy(client->wl_shm);
+	if (client->dmabuf)
+		zwp_linux_dmabuf_v1_destroy(client->dmabuf);
+	if (client->viewporter)
+		wp_viewporter_destroy(client->viewporter);
+	if (client->presentation)
+		wp_presentation_destroy(client->presentation);
+	if (client->single_pixel_manager)
+		wp_single_pixel_buffer_manager_v1_destroy(client->single_pixel_manager);
+	if (client->color_representation)
+		wp_color_representation_manager_v1_destroy(client->color_representation);
 	if (client->wl_compositor)
 		wl_compositor_destroy(client->wl_compositor);
+	if (client->wl_subcompositor)
+		wl_subcompositor_destroy(client->wl_subcompositor);
 	if (client->wl_registry)
 		wl_registry_destroy(client->wl_registry);
 
 	if (client->wl_display) {
 		ret = wl_display_roundtrip(client->wl_display);
-		assert(client->errored_ok || ret >= 0);
+		test_assert_true(client->errored_ok || ret >= 0);
 		wl_display_disconnect(client->wl_display);
 	}
 
@@ -1177,7 +1342,7 @@ output_path(void)
 	return path;
 }
 
-static const char*
+const char *
 reference_path(void)
 {
 	char *path = getenv("WESTON_TEST_REFERENCE_PATH");
@@ -1202,9 +1367,11 @@ char *
 image_filename(const char *basename)
 {
 	char *filename;
+	int ret;
 
-	if (asprintf(&filename, "%s/%s.png", reference_path(), basename) < 0)
-		assert(0);
+	ret = asprintf(&filename, "%s/%s.png", reference_path(), basename);
+	test_assert_int_ge(ret, 0);
+
 	return filename;
 }
 
@@ -1222,8 +1389,8 @@ output_filename_for_test_program(const char *test_program, const char *suffix,
 {
 	char *filename;
 
-	assert(test_program);
-	assert(file_ext);
+	test_assert_ptr_not_null(test_program);
+	test_assert_ptr_not_null(file_ext);
 
 	if (suffix)
 		str_printf(&filename, "%s/%s-%s.%s", output_path(), test_program,
@@ -1232,7 +1399,7 @@ output_filename_for_test_program(const char *test_program, const char *suffix,
 		str_printf(&filename, "%s/%s.%s", output_path(), test_program,
 						  file_ext);
 
-	assert(filename);
+	test_assert_ptr_not_null(filename);
 	return filename;
 }
 
@@ -1253,9 +1420,9 @@ output_filename_for_fixture(const char *test_program,
 	int fixture_number;
 	char *filename;
 
-	assert(test_program);
-	assert(harness);
-	assert(file_ext);
+	test_assert_ptr_not_null(test_program);
+	test_assert_ptr_not_null(harness);
+	test_assert_ptr_not_null(file_ext);
 
 	fixture_number = get_test_fixture_number_from_harness(harness);
 
@@ -1266,7 +1433,7 @@ output_filename_for_fixture(const char *test_program,
 		str_printf(&filename, "%s/%s-f%02d.%s", output_path(), test_program,
 							fixture_number, file_ext);
 
-	assert(filename);
+	test_assert_ptr_not_null(filename);
 	return filename;
 }
 
@@ -1288,7 +1455,7 @@ output_filename_for_test_case(const char *suffix, uint32_t seq_number,
 {
 	char *filename;
 
-	assert(file_ext);
+	test_assert_ptr_not_null(file_ext);
 
 	if (suffix)
 		str_printf(&filename, "%s/%s-%s-%02d.%s", output_path(), get_test_name(),
@@ -1297,7 +1464,7 @@ output_filename_for_test_case(const char *suffix, uint32_t seq_number,
 		str_printf(&filename, "%s/%s-%02d.%s", output_path(), get_test_name(),
 						       seq_number, file_ext);
 
-	assert(filename);
+	test_assert_ptr_not_null(filename);
 	return filename;
 }
 
@@ -1331,6 +1498,58 @@ fopen_dump_file(const char *suffix)
 	return fp;
 }
 
+/**
+ * Read a file into a newly malloc'd memory.
+ *
+ * \param fname Full name of the file to read.
+ * \param data_out Pointer where to store the pointer to the read data.
+ * \return Length of the data, or 0 on error.
+ *
+ * On error, *data_out is not modified. On success, *data_out contains a
+ * pointer to the data and must be free()'d by the caller.
+ */
+size_t
+read_blob_from_file(const char *fname, char **data_out)
+{
+	struct wl_array data;
+	char tmpbuf[64];
+	FILE *fp;
+	size_t len;
+	void *p;
+	int fer;
+
+	testlog("%s: %s\n", __func__, fname);
+
+	wl_array_init(&data);
+
+	fp = fopen(fname, "rb");
+	if (!test_assert_ptr_not_null(fp)) {
+		wl_array_release(&data);
+		return 0;
+	}
+
+	while (!feof(fp)) {
+		len = fread(tmpbuf, 1, sizeof tmpbuf, fp);
+		if (len == 0)
+			break;
+
+		p = wl_array_add(&data, len);
+		abort_oom_if_null(p);
+		memcpy(p, tmpbuf, len);
+	}
+
+	fer = ferror(fp);
+	fclose(fp);
+
+	if (fer) {
+		wl_array_release(&data);
+		return 0;
+	}
+
+	*data_out = data.data;
+	return data.size;
+}
+
 struct format_map_entry {
 	cairo_format_t cairo;
 	pixman_format_code_t pixman;
@@ -1352,7 +1571,9 @@ format_cairo2pixman(cairo_format_t fmt)
 		if (format_map[i].cairo == fmt)
 			return format_map[i].pixman;
 
-	assert(0 && "unknown Cairo pixel format");
+	test_assert_not_reached("unknown Cairo pixel format");
+
+	return 0;
 }
 
 static cairo_format_t
@@ -1364,7 +1585,9 @@ format_pixman2cairo(pixman_format_code_t fmt)
 		if (format_map[i].pixman == fmt)
 			return format_map[i].cairo;
 
-	assert(0 && "unknown Pixman pixel format");
+	test_assert_not_reached("unknown Pixman pixel format");
+
+	return 0;
 }
 
 /**
@@ -1381,7 +1604,7 @@ range_get(const struct range *r)
 	if (!r)
 		return (struct range){ 0, 0 };
 
-	assert(r->a <= r->b);
+	test_assert_int_le(r->a, r->b);
 	return *r;
 }
 
@@ -1421,14 +1644,14 @@ image_check_get_roi(const struct image_header *ih_a,
 		box.y2 = max(ih_a->height, ih_b->height);
 	}
 
-	assert(box.x1 >= 0);
-	assert(box.y1 >= 0);
-	assert(box.x2 > box.x1);
-	assert(box.y2 > box.y1);
-	assert(box.x2 <= ih_a->width);
-	assert(box.x2 <= ih_b->width);
-	assert(box.y2 <= ih_a->height);
-	assert(box.y2 <= ih_b->height);
+	test_assert_s32_ge(box.x1, 0);
+	test_assert_s32_ge(box.y1, 0);
+	test_assert_s32_gt(box.x2, box.x1);
+	test_assert_s32_gt(box.y2, box.y1);
+	test_assert_s32_le(box.x2, ih_a->width);
+	test_assert_s32_le(box.x2, ih_b->width);
+	test_assert_s32_le(box.y2, ih_a->height);
+	test_assert_s32_le(box.y2, ih_b->height);
 
 	return box;
 }
@@ -1682,7 +1905,7 @@ image_convert_to_a8r8g8b8(pixman_image_t *image)
 
 	ret = pixman_image_create_bits_no_clear(PIXMAN_a8r8g8b8,
 						ih.width, ih.height, NULL, 0);
-	assert(ret);
+	test_assert_ptr_not_null(ret);
 
 	pixman_image_composite32(PIXMAN_OP_SRC, image, NULL, ret,
 				 0, 0, 0, 0, 0, 0, ih.width, ih.height);
@@ -1743,7 +1966,7 @@ load_image_from_png(const char *fname)
 	/* The Cairo surface will own the data, so we keep it around. */
 	image = pixman_image_create_bits_no_clear(pixman_fmt,
 						  width, height, data, stride);
-	assert(image);
+	test_assert_ptr_not_null(image);
 
 	pixman_image_set_destroy_function(image, destroy_cairo_surface,
 					  reference_cairo_surface);
@@ -1758,6 +1981,7 @@ struct output_capturer {
 	int width;
 	int height;
 	uint32_t drm_format;
+	bool formats_done;
 
 	struct weston_capture_v1 *factory;
 	struct weston_capture_source_v1 *source;
@@ -1772,7 +1996,22 @@ output_capturer_handle_format(void *data,
 {
 	struct output_capturer *capt = data;
 
-	capt->drm_format = drm_format;
+	if (capt->formats_done) {
+		capt->drm_format = DRM_FORMAT_INVALID;
+		capt->formats_done = false;
+	}
+
+	if (!capt->drm_format)
+		capt->drm_format = drm_format;
+}
+
+static void
+output_capturer_handle_formats_done(void *data,
+				    struct weston_capture_source_v1 *proxy)
+{
+	struct output_capturer *capt = data;
+
+	capt->formats_done = true;
 }
 
 static void
@@ -1799,7 +2038,7 @@ static void
 output_capturer_handle_retry(void *data,
 			     struct weston_capture_source_v1 *proxy)
 {
-	assert(0 && "output capture retry in tests indicates a race");
+	test_assert_not_reached("output capture retry in tests indicates a race");
 }
 
 static void
@@ -1808,11 +2047,13 @@ output_capturer_handle_failed(void *data,
 			      const char *msg)
 {
 	testlog("output capture failed: %s", msg ? msg : "?");
-	assert(0 && "output capture failed");
+
+	test_assert_not_reached("output capture failed");
 }
 
 static const struct weston_capture_source_v1_listener output_capturer_source_handlers = {
 	.format = output_capturer_handle_format,
+	.formats_done = output_capturer_handle_formats_done,
 	.size = output_capturer_handle_size,
 	.complete = output_capturer_handle_complete,
 	.retry = output_capturer_handle_retry,
@@ -1822,14 +2063,15 @@ static const struct weston_capture_source_v1_listener output_capturer_source_han
 struct buffer *
 client_capture_output(struct client *client,
 		      struct output *output,
-		      enum weston_capture_v1_source src)
+		      enum weston_capture_v1_source src,
+		      enum client_buffer_type buffer_type)
 {
 	struct output_capturer capt = {};
 	struct buffer *buf;
 
 	capt.factory = bind_to_singleton_global(client,
 						&weston_capture_v1_interface,
-						1);
+						2);
 
 	capt.source = weston_capture_v1_create(capt.factory,
 					       output->wl_output, src);
@@ -1839,15 +2081,19 @@ client_capture_output(struct client *client,
 
 	client_roundtrip(client);
 
-	assert(capt.width != 0 && capt.height != 0 && capt.drm_format != 0 &&
-	       "capture source not available");
+	test_assert_true(capt.width != 0 &&
+			 capt.height != 0 &&
+			 capt.drm_format != 0 &&
+			 capt.formats_done &&
+			 "capture source not available");
 
-	buf = create_shm_buffer(client,
-				capt.width, capt.height, capt.drm_format);
+	buf = create_buffer(client, capt.width, capt.height, capt.drm_format,
+			    buffer_type);
 
 	weston_capture_source_v1_capture(capt.source, buf->proxy);
 	while (!capt.complete)
-		assert(wl_display_dispatch(client->wl_display) >= 0);
+		if (!test_assert_int_ge(wl_display_dispatch(client->wl_display), 0))
+			break;
 
 	weston_capture_source_v1_destroy(capt.source);
 	weston_capture_v1_destroy(capt.factory);
@@ -1870,16 +2116,21 @@ client_capture_output(struct client *client,
  * is ensured to be PIXMAN_a8r8g8b8.
  *
  * @param client a client instance, as created by create_client()
- * @param output_name the name of the output, as specified by wl_output.name
+ * @param output_name the name of the output, as specified by wl_output.name,
+ * or NULL to use the client-defined output
+ * @param include_decorations true if the screenshot should include output
+ * decorations, or false if it should include just the client content
  * @returns A new buffer object, that should be freed with buffer_destroy().
  */
 struct buffer *
-capture_screenshot_of_output(struct client *client, const char *output_name)
+capture_screenshot_of_output(struct client *client, const char *output_name,
+			     enum screenshot_decoration_mode include_decorations)
 {
 	struct image_header ih;
 	struct buffer *shm;
 	struct buffer *buf;
 	struct output *output = NULL;
+	enum weston_capture_v1_source source;
 
 	if (output_name) {
 		struct output *output_iter;
@@ -1891,13 +2142,18 @@ capture_screenshot_of_output(struct client *client, const char *output_name)
 			}
 		}
 
-		assert(output);
+		test_assert_ptr_not_null(output);
 	} else {
 		output = client->output;
 	}
 
-	shm = client_capture_output(client, output,
-				    WESTON_CAPTURE_V1_SOURCE_FRAMEBUFFER);
+	if (include_decorations == INCLUDE_DECORATIONS)
+		source = WESTON_CAPTURE_V1_SOURCE_FULL_FRAMEBUFFER;
+	else
+		source = WESTON_CAPTURE_V1_SOURCE_FRAMEBUFFER;
+
+	shm = client_capture_output(client, output, source,
+				    CLIENT_BUFFER_TYPE_SHM);
 	ih = image_header_from(shm->image);
 
 	if (ih.pixman_format == PIXMAN_a8r8g8b8)
@@ -1966,18 +2222,15 @@ verify_image(pixman_image_t *shot,
 	     const struct rectangle *clip,
 	     int seq_no)
 {
-	const struct range gl_fuzz = { -3, 4 };
+	const struct range gl_fuzz = { -5, 4 };
 	pixman_image_t *ref = NULL;
 	char *ref_fname = NULL;
 	char *shot_fname;
 	bool match = false;
 
 	shot_fname = output_filename_for_test_case("shot", seq_no, "png");
-
-	if (ref_image) {
-		ref_fname = screenshot_reference_filename(ref_image, ref_seq_no);
-		ref = load_image_from_png(ref_fname);
-	}
+	ref_fname = screenshot_reference_filename(ref_image, ref_seq_no);
+	ref = load_image_from_png(ref_fname);
 
 	if (ref) {
 		match = check_images_match(ref, shot, clip, &gl_fuzz);
@@ -2014,6 +2267,8 @@ verify_image(pixman_image_t *shot,
  * \param seq_no See verify_image().
  * \param output_name the output name as specified by wl_output.name. If NULL,
  * this is the last wl_output advertised by wl_registry.
+ * \param include_decorations true if the screenshot should include output
+ * decorations, or false if it should include just the client content
  * \return True if the screen contents matches the reference image,
  * false otherwise.
  */
@@ -2022,13 +2277,15 @@ verify_screen_content(struct client *client,
 		      const char *ref_image,
 		      int ref_seq_no,
 		      const struct rectangle *clip,
-		      int seq_no, const char *output_name)
+		      int seq_no, const char *output_name,
+		      enum screenshot_decoration_mode include_decorations)
 {
 	struct buffer *shot;
 	bool match;
 
-	shot = capture_screenshot_of_output(client, output_name);
-	assert(shot);
+	shot = capture_screenshot_of_output(client, output_name,
+					    include_decorations);
+	test_assert_ptr_not_null(shot);
 	match = verify_image(shot->image, ref_image, ref_seq_no, clip, seq_no);
 	buffer_destroy(shot);
 
@@ -2057,12 +2314,12 @@ client_buffer_from_image_file(struct client *client,
 	int buf_w, buf_h;
 	pixman_transform_t scaling;
 
-	assert(scale >= 1);
+	test_assert_int_ge(scale, 1);
 
 	fname = image_filename(basename);
 	img = load_image_from_png(fname);
 	free(fname);
-	assert(img);
+	test_assert_ptr_not_null(img);
 
 	buf_w = scale * pixman_image_get_width(img);
 	buf_h = scale * pixman_image_get_height(img);
@@ -2113,14 +2370,16 @@ bind_to_singleton_global(struct client *client,
 		if (strcmp(tmp->interface, iface->name))
 			continue;
 
-		assert(!g && "multiple singleton objects");
+		/* Multiple singleton objects. */
+		test_assert_ptr_null(g);
 		g = tmp;
 	}
 
-	assert(g && "singleton not found");
+	/*  Singleton not found. */
+	test_assert_ptr_not_null(g);
 
 	proxy = wl_registry_bind(client->wl_registry, g->name, iface, version);
-	assert(proxy);
+	test_assert_ptr_not_null(proxy);
 
 	return proxy;
 }
@@ -2134,15 +2393,11 @@ bind_to_singleton_global(struct client *client,
 struct wp_viewport *
 client_create_viewport(struct client *client)
 {
-	struct wp_viewporter *viewporter;
 	struct wp_viewport *viewport;
 
-	viewporter = bind_to_singleton_global(client,
-					      &wp_viewporter_interface, 1);
-	viewport = wp_viewporter_get_viewport(viewporter,
+	viewport = wp_viewporter_get_viewport(client->viewporter,
 					      client->surface->wl_surface);
-	assert(viewport);
-	wp_viewporter_destroy(viewporter);
+	test_assert_ptr_not_null(viewport);
 
 	return viewport;
 }
@@ -2173,6 +2428,20 @@ fill_image_with_color(pixman_image_t *image, const pixman_color_t *color)
 				 0, 0, /* dst x,y */
 				 width, height);
 	pixman_image_unref(solid);
+}
+
+struct buffer *
+create_shm_buffer_solid(struct client *client, int width, int height,
+			const pixman_color_t *color)
+{
+	struct buffer *buffer;
+
+	buffer = create_shm_buffer_a8r8g8b8(client, width, height);
+	if (!buffer)
+		return NULL;
+	fill_image_with_color(buffer->image, color);
+
+	return buffer;
 }
 
 /**
@@ -2231,33 +2500,87 @@ client_wait_breakpoint(struct client *client,
 {
 	struct wet_test_active_breakpoint *active_bp;
 
-	assert(suite_data);
-	assert(!suite_data->breakpoints.in_client_break);
+	test_assert_ptr_not_null(suite_data);
+	test_assert_false(suite_data->breakpoints.in_client_break);
 
 	wl_display_flush(client->wl_display);
 	wet_test_wait_sem(&suite_data->breakpoints.client_break);
 
 	active_bp = suite_data->breakpoints.active_bp;
-	assert(active_bp);
+	test_assert_ptr_not_null(active_bp);
 	suite_data->breakpoints.in_client_break = true;
 	return active_bp;
 }
 
-static void *
+void *
 get_resource_data_from_proxy(struct wet_testsuite_data *suite_data,
 			     struct wl_proxy *proxy)
 {
 	struct wl_resource *resource;
 
-	assert(suite_data->breakpoints.in_client_break);
+	test_assert_true(suite_data->breakpoints.in_client_break);
 
 	if (!proxy)
 		return NULL;
 
 	resource = wl_client_get_object(suite_data->wl_client,
 					wl_proxy_get_id(proxy));
-	assert(resource);
+	test_assert_ptr_not_null(resource);
 	return wl_resource_get_user_data(resource);
+}
+
+void
+assert_resource_is_proxy(struct wet_testsuite_data *suite_data,
+			 struct wl_resource *r, void *p)
+{
+	test_assert_ptr_not_null(r);
+	test_assert_ptr_eq(wl_resource_get_client(r), suite_data->wl_client);
+	test_assert_u32_eq(wl_resource_get_id(r),
+			   wl_proxy_get_id((struct wl_proxy *) p));
+}
+
+void
+assert_surface_matches(struct wet_testsuite_data *suite_data,
+		       struct weston_surface *s, struct surface *c)
+{
+	test_assert_ptr_not_null(s);
+	test_assert_ptr_not_null(c);
+
+	assert_resource_is_proxy(suite_data, s->resource, c->wl_surface);
+	test_assert_s32_eq(s->width, c->width);
+	test_assert_s32_eq(s->height, c->height);
+
+	test_assert_ptr_not_null(s->buffer_ref.buffer);
+	test_assert_ptr_not_null(c->buffer);
+	assert_resource_is_proxy(suite_data, s->buffer_ref.buffer->resource,
+				 c->buffer->proxy);
+}
+
+void
+assert_output_matches(struct wet_testsuite_data *suite_data,
+		      struct weston_output *s, struct output *c)
+{
+	struct weston_head *head;
+	bool found_client_resource = false;
+
+	test_assert_ptr_not_null(s);
+	test_assert_ptr_not_null(c);
+
+	wl_list_for_each(head, &s->head_list, output_link) {
+		struct wl_resource *res;
+		wl_resource_for_each(res, &head->resource_list) {
+			if (wl_resource_get_client(res) == suite_data->wl_client &&
+			    wl_resource_get_id(res) ==
+			     wl_proxy_get_id((struct wl_proxy *) c->wl_output)) {
+				found_client_resource = true;
+				break;
+			}
+		}
+	}
+	test_assert_true(found_client_resource);
+
+	test_assert_s32_eq(s->width, c->width);
+	test_assert_s32_eq(s->height, c->height);
 }
 
 /**
@@ -2281,7 +2604,7 @@ client_insert_breakpoint(struct client *client,
 {
 	struct wet_test_pending_breakpoint *bp;
 
-	assert(suite_data->breakpoints.in_client_break);
+	test_assert_true(suite_data->breakpoints.in_client_break);
 
 	bp = xzalloc(sizeof(*bp));
 	bp->breakpoint = breakpoint;
@@ -2310,7 +2633,7 @@ client_remove_breakpoint(struct client *client,
 	struct wet_test_pending_breakpoint *bp, *tmp;
 	void *resource = get_resource_data_from_proxy(suite_data, proxy);
 
-	assert(suite_data->breakpoints.in_client_break);
+	test_assert_true(suite_data->breakpoints.in_client_break);
 
 	wl_list_for_each_safe(bp, tmp, &suite_data->breakpoints.list,
 			      link) {
@@ -2318,13 +2641,13 @@ client_remove_breakpoint(struct client *client,
 			continue;
 		if (bp->resource != resource)
 			continue;
-		assert(bp != suite_data->breakpoints.active_bp->template_);
+		test_assert_ptr_ne(bp, suite_data->breakpoints.active_bp->template_);
 		wl_list_remove(&bp->link);
 		free(bp);
 		return;
 	}
 
-	assert(!"couldn't find breakpoint to remove");
+	test_assert_not_reached("couldn't find breakpoint to remove");
 }
 
 /**
@@ -2339,7 +2662,7 @@ client_release_breakpoint(struct client *client,
 			  struct wet_testsuite_data *suite_data,
 			  struct wet_test_active_breakpoint *active_bp)
 {
-	assert(suite_data->breakpoints.active_bp == active_bp);
+	test_assert_ptr_eq(suite_data->breakpoints.active_bp, active_bp);
 
 	if (active_bp->rearm_on_release) {
 		wl_list_insert(&suite_data->breakpoints.list,
@@ -2352,4 +2675,86 @@ client_release_breakpoint(struct client *client,
 	suite_data->breakpoints.active_bp = NULL;
 	suite_data->breakpoints.in_client_break = false;
 	wet_test_post_sem(&suite_data->breakpoints.server_release);
+}
+
+struct wl_subcompositor *
+client_get_subcompositor(struct client *client)
+{
+	struct global *g;
+	struct global *global_sub = NULL;
+	struct wl_subcompositor *sub;
+
+	wl_list_for_each(g, &client->global_list, link) {
+		if (strcmp(g->interface, "wl_subcompositor"))
+			continue;
+
+		if (global_sub)
+			test_assert_not_reached("multiple wl_subcompositor objects");
+
+		global_sub = g;
+	}
+
+	test_assert_ptr_not_null(global_sub);
+
+	test_assert_u32_eq(global_sub->version, 1);
+
+	sub = wl_registry_bind(client->wl_registry, global_sub->name,
+			      &wl_subcompositor_interface, 1);
+	test_assert_ptr_not_null(sub);
+
+	return sub;
+}
+
+static void
+presentation_clock_id(void *data, struct wp_presentation *presentation,
+		      uint32_t clk_id)
+{
+	struct client *client = data;
+
+	client->presentation_clock = clk_id;
+	client->has_presentation_clock = true;
+}
+
+static const struct wp_presentation_listener presentation_listener = {
+	presentation_clock_id
+};
+
+struct wp_presentation *
+client_get_presentation(struct client *client)
+{
+	struct global *g;
+	struct global *global_pres = NULL;
+	struct wp_presentation *pres;
+
+	wl_list_for_each(g, &client->global_list, link) {
+		if (strcmp(g->interface, wp_presentation_interface.name))
+			continue;
+
+		if (global_pres)
+			test_assert_not_reached("multiple presentation objects");
+
+		global_pres = g;
+	}
+
+	test_assert_ptr_not_null(global_pres);
+
+	test_assert_u32_eq(global_pres->version, 2);
+
+	pres = wl_registry_bind(client->wl_registry, global_pres->name,
+				&wp_presentation_interface, 2);
+	wp_presentation_add_listener(pres, &presentation_listener, client);
+
+	test_assert_ptr_not_null(pres);
+
+	client_roundtrip(client);
+
+	return pres;
+}
+
+clockid_t
+client_get_presentation_clock(struct client *client)
+{
+	test_assert_true(client->has_presentation_clock);
+
+	return client->presentation_clock;
 }

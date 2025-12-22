@@ -29,6 +29,7 @@
 #include <lcms2.h>
 
 #include "weston-test-client-helper.h"
+#include "weston-test-assert.h"
 #include "color_util.h"
 #include "lcms_util.h"
 
@@ -50,8 +51,8 @@ compare_pipeline_to_transfer_fn(cmsPipeline *pipeline, enum transfer_fn fn,
 }
 
 static const enum transfer_fn build_MPE_curves_test_set[] = {
-	TRANSFER_FN_SRGB_EOTF,
-	TRANSFER_FN_SRGB_EOTF_INVERSE,
+	TRANSFER_FN_SRGB,
+	TRANSFER_FN_SRGB_INVERSE,
 	TRANSFER_FN_ADOBE_RGB_EOTF,
 	TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE,
 	TRANSFER_FN_POWER2_4_EOTF,
@@ -78,8 +79,10 @@ TEST_P(build_MPE_curves, build_MPE_curves_test_set)
 	testlog("Transfer function %s as a segmented curve element, error:\n",
 		transfer_fn_name(*fn));
 	scalar_stat_print_float(&stat);
-	assert(fabs(stat.max) < 1e-7);
-	assert(fabs(stat.min) < 1e-7);
+	test_assert_f64_lt(fabs(stat.max), 1e-7);
+	test_assert_f64_lt(fabs(stat.min), 1e-7);
 
 	cmsPipelineFree(pipeline);
+
+	return RESULT_OK;
 }

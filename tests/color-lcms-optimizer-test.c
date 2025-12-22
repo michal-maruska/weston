@@ -28,6 +28,7 @@
 #include <lcms2_plugin.h>
 
 #include "weston-test-client-helper.h"
+#include "weston-test-assert.h"
 #include "libweston/color-lcms/color-lcms.h"
 #include "libweston/color-lcms/color-curve-segments.h"
 
@@ -90,10 +91,10 @@ pipeline_context_new(void)
 	struct pipeline_context ret;
 
 	ret.context_id = cmsCreateContext(NULL, NULL);
-	assert(ret.context_id);
+	test_assert_ptr_not_null(ret.context_id);
 
 	ret.pipeline = cmsPipelineAlloc(ret.context_id, N_CHANNELS, N_CHANNELS);
-	assert(ret.pipeline);
+	test_assert_ptr_not_null(ret.pipeline);
 
 	return ret;
 }
@@ -115,15 +116,15 @@ add_curve(struct pipeline_context *pc, cmsInt32Number type,
 	unsigned int i;
 
 	curve = cmsBuildParametricToneCurve(pc->context_id, type, params);
-	assert(curve);
+	test_assert_ptr_not_null(curve);
 
 	for (i = 0; i < N_CHANNELS; i++)
 		curveset[i] = curve;
 
 	stage = cmsStageAllocToneCurves(pc->context_id, ARRAY_LENGTH(curveset), curveset);
-	assert(stage);
+	test_assert_ptr_not_null(stage);
 
-	assert(cmsPipelineInsertStage(pc->pipeline, cmsAT_END, stage));
+	test_assert_true(cmsPipelineInsertStage(pc->pipeline, cmsAT_END, stage));
 
 	cmsFreeToneCurve(curve);
 }
@@ -134,9 +135,9 @@ add_identity_curve(struct pipeline_context *pc)
 	cmsStage *stage;
 
 	stage = cmsStageAllocToneCurves(pc->context_id, N_CHANNELS, NULL);
-	assert(stage);
+	test_assert_ptr_not_null(stage);
 
-	assert(cmsPipelineInsertStage(pc->pipeline, cmsAT_END, stage));
+	test_assert_true(cmsPipelineInsertStage(pc->pipeline, cmsAT_END, stage));
 }
 
 static void
@@ -146,9 +147,9 @@ add_matrix(struct pipeline_context *pc,
 	cmsStage *stage;
 
 	stage = cmsStageAllocMatrix(pc->context_id, N_CHANNELS, N_CHANNELS, matrix, NULL);
-	assert(stage);
+	test_assert_ptr_not_null(stage);
 
-	assert(cmsPipelineInsertStage(pc->pipeline, cmsAT_END, stage));
+	test_assert_true(cmsPipelineInsertStage(pc->pipeline, cmsAT_END, stage));
 }
 
 static bool
@@ -176,13 +177,15 @@ TEST(keep_regular_matrix)
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
 	elem = cmsPipelineGetPtrToFirstStage(pc.pipeline);
-	assert(elem);
+	test_assert_ptr_not_null(elem);
 	data = cmsStageData(elem);
-	assert(are_matrices_equal(regular_matrix, data->Double));
+	test_assert_true(are_matrices_equal(regular_matrix, data->Double));
 
-	assert(!cmsStageNext(elem));
+	test_assert_ptr_null(cmsStageNext(elem));
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Pipeline with a identity matrix, which should be removed. */
@@ -194,9 +197,11 @@ TEST(drop_identity_matrix)
 
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
-	assert(cmsPipelineStageCount(pc.pipeline) == 0);
+	test_assert_u32_eq(cmsPipelineStageCount(pc.pipeline), 0);
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Pipeline with two inverse matrices. When merged they become identity, which
@@ -210,9 +215,11 @@ TEST(drop_inverse_matrices)
 
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
-	assert(cmsPipelineStageCount(pc.pipeline) == 0);
+	test_assert_u32_eq(cmsPipelineStageCount(pc.pipeline), 0);
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Pipeline with an identity and two inverse matrices. Pipeline must be empty
@@ -227,9 +234,11 @@ TEST(drop_identity_and_inverse_matrices)
 
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
-	assert(cmsPipelineStageCount(pc.pipeline) == 0);
+	test_assert_u32_eq(cmsPipelineStageCount(pc.pipeline), 0);
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Pipeline has a regular matrix followed by two inverses, which should be
@@ -247,13 +256,15 @@ TEST(only_drop_inverse_matrices)
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
 	elem = cmsPipelineGetPtrToFirstStage(pc.pipeline);
-	assert(elem);
+	test_assert_ptr_not_null(elem);
 	data = cmsStageData(elem);
-	assert(are_matrices_equal(regular_matrix, data->Double));
+	test_assert_true(are_matrices_equal(regular_matrix, data->Double));
 
-	assert(!cmsStageNext(elem));
+	test_assert_ptr_null(cmsStageNext(elem));
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Same as above, but the regular matrix is the last element. */
@@ -270,13 +281,15 @@ TEST(only_drop_inverse_matrices_another_order)
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
 	elem = cmsPipelineGetPtrToFirstStage(pc.pipeline);
-	assert(elem);
+	test_assert_ptr_not_null(elem);
 	data = cmsStageData(elem);
-	assert(are_matrices_equal(regular_matrix, data->Double));
+	test_assert_true(are_matrices_equal(regular_matrix, data->Double));
 
-	assert(!cmsStageNext(elem));
+	test_assert_ptr_null(cmsStageNext(elem));
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Pipeline has an identity curve, which should be removed. */
@@ -288,9 +301,11 @@ TEST(drop_identity_curve)
 
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
-	assert(cmsPipelineStageCount(pc.pipeline) == 0);
+	test_assert_u32_eq(cmsPipelineStageCount(pc.pipeline), 0);
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Pipeline has two parametric curves that are inverse. So they should be
@@ -304,9 +319,11 @@ TEST(drop_inverse_curves)
 
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
-	assert(cmsPipelineStageCount(pc.pipeline) == 0);
+	test_assert_u32_eq(cmsPipelineStageCount(pc.pipeline), 0);
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Pipeline has two parametric inverse curves followed by an identity. Pipeline
@@ -321,9 +338,11 @@ TEST(drop_identity_and_inverse_curves)
 
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
-	assert(cmsPipelineStageCount(pc.pipeline) == 0);
+	test_assert_u32_eq(cmsPipelineStageCount(pc.pipeline), 0);
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Same as above, but the identity is the last element. */
@@ -337,9 +356,11 @@ TEST(drop_identity_and_inverse_curves_another_order)
 
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
-	assert(cmsPipelineStageCount(pc.pipeline) == 0);
+	test_assert_u32_eq(cmsPipelineStageCount(pc.pipeline), 0);
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 #if HAVE_CMS_GET_TONE_CURVE_SEGMENT
@@ -355,7 +376,7 @@ are_curveset_curves_equal_to_curve(struct pipeline_context *pc,
 		cmsBuildParametricToneCurve(pc->context_id, curve->type,
 					    curve->params);
 
-	assert(curveset_data->nCurves == N_CHANNELS);
+	test_assert_u32_eq(curveset_data->nCurves, N_CHANNELS);
 
 	for (i = 0; i < N_CHANNELS; i++) {
 		if (!are_curves_equal(curveset_data->TheCurves[i], cms_curve)) {
@@ -380,13 +401,15 @@ TEST(keep_regular_curve)
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
 	stage = cmsPipelineGetPtrToFirstStage(pc.pipeline);
-	assert(stage);
-	assert(are_curveset_curves_equal_to_curve(&pc, cmsStageData(stage),
-						  &power_law_curve_A));
+	test_assert_ptr_not_null(stage);
+	test_assert_true(are_curveset_curves_equal_to_curve(&pc, cmsStageData(stage),
+							    &power_law_curve_A));
 
-	assert(!cmsStageNext(stage));
+	test_assert_ptr_null(cmsStageNext(stage));
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Inverse curves followed by a parametric curve. Inverse curves are dropped (as
@@ -404,13 +427,15 @@ TEST(do_not_merge_identity_with_parametric)
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
 	stage = cmsPipelineGetPtrToFirstStage(pc.pipeline);
-	assert(stage);
-	assert(are_curveset_curves_equal_to_curve(&pc, cmsStageData(stage),
-						  &srgb_curve));
+	test_assert_ptr_not_null(stage);
+	test_assert_true(are_curveset_curves_equal_to_curve(&pc, cmsStageData(stage),
+							    &srgb_curve));
 
-	assert(!cmsStageNext(stage));
+	test_assert_ptr_null(cmsStageNext(stage));
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Merge power-law function with itself. */
@@ -430,13 +455,15 @@ TEST(merge_power_law_curves_with_itself)
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
 	stage = cmsPipelineGetPtrToFirstStage(pc.pipeline);
-	assert(stage);
-	assert(are_curveset_curves_equal_to_curve(&pc, cmsStageData(stage),
-						  &result_curve));
+	test_assert_ptr_not_null(stage);
+	test_assert_true(are_curveset_curves_equal_to_curve(&pc, cmsStageData(stage),
+							    &result_curve));
 
-	assert(!cmsStageNext(stage));
+	test_assert_ptr_null(cmsStageNext(stage));
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 /* Merge power-law functions into a single parametric one of the same type. */
@@ -456,13 +483,15 @@ TEST(merge_power_law_curves_with_another)
 	lcms_optimize_pipeline(&pc.pipeline, pc.context_id);
 
 	stage = cmsPipelineGetPtrToFirstStage(pc.pipeline);
-	assert(stage);
-	assert(are_curveset_curves_equal_to_curve(&pc, cmsStageData(stage),
-						  &result_curve));
+	test_assert_ptr_not_null(stage);
+	test_assert_true(are_curveset_curves_equal_to_curve(&pc, cmsStageData(stage),
+							    &result_curve));
 
-	assert(!cmsStageNext(stage));
+	test_assert_ptr_null(cmsStageNext(stage));
 
 	pipeline_context_release(&pc);
+
+	return RESULT_OK;
 }
 
 #endif /* HAVE_CMS_GET_TONE_CURVE_SEGMENT */

@@ -4,6 +4,8 @@
 # .gitlab-ci.yml for more information. This script is called from an
 # OS-specific build scripts like debian-install.sh.
 
+source "${FDO_CI_BASH_HELPERS}"
+
 set -o xtrace -o errexit
 
 # Set concurrency to an appropriate level for our shared runners, falling back
@@ -25,7 +27,8 @@ esac
 
 # Build and install Meson. Generally we want to keep this in sync with what
 # we require inside meson.build.
-pip3 install $PIP_ARGS git+https://github.com/mesonbuild/meson.git@1.0.0
+fdo_log_section_start_collapsed install_meson "install_meson"
+pip3 install $PIP_ARGS git+https://github.com/mesonbuild/meson.git@1.4.2
 export PATH=$HOME/.local/bin:$PATH
 
 # Our docs are built using Sphinx (top-level organisation and final HTML/CSS
@@ -41,31 +44,22 @@ pip3 install $PIP_ARGS sphinxcontrib-qthelp==1.0.3
 pip3 install $PIP_ARGS sphinxcontrib-serializinghtml==1.1.5
 pip3 install $PIP_ARGS breathe==4.31.0
 pip3 install $PIP_ARGS sphinx_rtd_theme==1.0.0
+fdo_log_section_end install_meson
+
 
 # Build a Linux kernel for use in testing. We enable the VKMS module so we can
 # predictably test the DRM backend in the absence of real hardware. We lock the
 # version here so we see predictable results.
 #
-# To run this we use virtme, a QEMU wrapper: https://github.com/amluto/virtme
+# To run this we use virtme-ng, a QEMU wrapper. It is a fork from virtme, whose
+# development stalled.
 #
-# virtme makes our lives easier by abstracting handling of the console,
+# virtme-ng makes our lives easier by abstracting handling of the console,
 # filesystem, etc, so we can pretend that the VM we execute in is actually
 # just a regular container.
-#
-# The reason why we are using a fork here is that it adds a patch to have the
-# --script-dir command line option. With that we can run scripts that are in a
-# certain folder when virtme starts, which is necessary in our use case.
-#
-# The upstream also has some commands that could help us to reach the same
-# results: --script-sh and --script-exec. Unfornutately they are not completely
-# implemented yet, so we had some trouble to use them and it was becoming
-# hackery.
-#
-# The fork pulls in this support from the original GitHub PR, rebased on top of
-# a newer upstream version which fixes AArch64 support.
+fdo_log_section_start_collapsed install_kernel "install_kernel"
 if [[ -n "$KERNEL_DEFCONFIG" ]]; then
-	# 6.3 is (still) used as >= 6.5 drm-writeback test will timeout
-	git clone --depth=1 --branch=v6.3 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux
+	git clone --depth=1 --branch=v6.18 https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git linux
 	cd linux
 
 	if [[ "${BUILD_ARCH}" = "x86-64" ]]; then
@@ -91,9 +85,8 @@ if [[ -n "$KERNEL_DEFCONFIG" ]]; then
 	./scripts/config \
 		--enable CONFIG_DRM \
 		--enable CONFIG_DRM_KMS_HELPER \
-		--enable CONFIG_DRM_KMS_FB_HELPER \
 		--enable CONFIG_DRM_VKMS \
-		--enable CONFIG_DRM_VGEM
+		--enable CONFIG_UDMABUF
 	make ARCH=${LINUX_ARCH} oldconfig
 	make ARCH=${LINUX_ARCH}
 
@@ -108,14 +101,15 @@ if [[ -n "$KERNEL_DEFCONFIG" ]]; then
 	./setup.py install
 	cd ..
 fi
+fdo_log_section_end install_kernel
 
 # Build and install Wayland; keep this version in sync with our dependency
 # in meson.build.
+fdo_log_section_start_collapsed install_wayland "install_wayland"
 git clone --branch 1.22.0 --depth=1 https://gitlab.freedesktop.org/wayland/wayland
 cd wayland
 git show -s HEAD
-mkdir build
-meson build --wrap-mode=nofallback -Ddocumentation=false
+meson setup build --wrap-mode=nofallback -Ddocumentation=false
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm -rf wayland
@@ -123,24 +117,39 @@ rm -rf wayland
 # Keep this version in sync with our dependency in meson.build. If you wish to
 # raise a MR against custom protocol, please change this reference to clone
 # your relevant tree, and make sure you bump $FDO_DISTRIBUTION_TAG.
-git clone --branch 1.33 --depth=1 https://gitlab.freedesktop.org/wayland/wayland-protocols
+git clone --branch 1.46 --depth=1 https://gitlab.freedesktop.org/wayland/wayland-protocols
 cd wayland-protocols
 git show -s HEAD
-meson build --wrap-mode=nofallback
+meson setup build --wrap-mode=nofallback -Dtests=false
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm -rf wayland-protocols
+fdo_log_section_end install_wayland
 
 # Build and install our own version of libdrm. Debian 11 (bullseye) provides
 # libdrm 2.4.104 which doesn't have the IN_FORMATS iterator api, and Mesa
 # depends on 2.4.109 as well.
-git clone --branch libdrm-2.4.109 --depth=1 https://gitlab.freedesktop.org/mesa/drm.git
+# Bump to 2.4.118 to include DRM_FORMAT_NV{15,20,30}
+fdo_log_section_start_collapsed install_libdrm "install_libdrm"
+git clone --branch libdrm-2.4.118 --depth=1 https://gitlab.freedesktop.org/mesa/drm.git
 cd drm
-meson build --wrap-mode=nofallback -Dauto_features=disabled \
-	-Dvc4=false -Dfreedreno=false -Detnaviv=false
+meson setup build --wrap-mode=nofallback -Dauto_features=disabled \
+	-Dvc4=disabled -Dfreedreno=disabled -Detnaviv=disabled
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm -rf drm
+fdo_log_section_end install_libdrm
+
+# Build and install Vulkan-Headers with a defined version, mostly because
+# the version in Debian 11 (bullseye) is too old to build vulkan-renderer.
+fdo_log_section_start_collapsed install_vulkan_headers "install_vulkan_headers"
+git clone --branch sdk-1.3.239.0 --depth=1 https://github.com/KhronosGroup/Vulkan-Headers
+cd Vulkan-Headers
+cmake -G Ninja -B build
+ninja ${NINJAFLAGS} -C build install
+cd ..
+rm -rf Vulkan-Headers
+fdo_log_section_end install_vulkan_headers
 
 # Build and install our own version of Mesa. Debian provides a perfectly usable
 # Mesa, however llvmpipe's rendering behaviour can change subtly over time.
@@ -149,64 +158,89 @@ rm -rf drm
 # features from Mesa then bump this version and $FDO_DISTRIBUTION_TAG, however
 # please be prepared for some of the tests to change output, which will need to
 # be manually inspected for correctness.
-git clone --branch 23.0 --depth=1 https://gitlab.freedesktop.org/mesa/mesa.git
+fdo_log_section_start_collapsed install_mesa "install_mesa"
+
+# Needed for Mesa >= 25.3
+git clone --branch 12.2.0 --depth=1 https://github.com/KhronosGroup/glslang
+cd glslang
+cmake -G Ninja -B build
+ninja ${NINJAFLAGS} -C build install
+cd ..
+rm -rf glslang
+
+# The 25.3 was the first stable release where the Vulkan backend works with
+# vkms+lavapipe.
+git clone --branch mesa-25.3.2 --depth=1 https://gitlab.freedesktop.org/mesa/mesa.git
 cd mesa
-meson build --wrap-mode=nofallback -Dauto_features=disabled \
-	-Dgallium-drivers=swrast -Dvulkan-drivers= -Ddri-drivers=
+meson setup build --wrap-mode=nofallback -Dauto_features=disabled \
+	-Dgallium-drivers=llvmpipe -Dvulkan-drivers=swrast -Dvideo-codecs= \
+	-Degl=enabled -Dgbm=enabled -Dgles2=enabled -Dllvm=enabled \
+	-Dshared-glapi=enabled -Dglx=disabled
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm -rf mesa
+fdo_log_section_end install_mesa
 
 # PipeWire is used for remoting support. Unlike our other dependencies its
 # behaviour will be stable, however as a pre-1.0 project its API is not yet
 # stable, so again we lock it to a fixed version.
 #
 # ... the version chosen is 0.3.32 with a small Clang-specific build fix.
+fdo_log_section_start_collapsed install_pipewire "install_pipewire"
 git clone --single-branch --branch master https://gitlab.freedesktop.org/pipewire/pipewire.git pipewire-src
 cd pipewire-src
 git checkout -b snapshot bf112940d0bf8f526dd6229a619c1283835b49c2
-meson build --wrap-mode=nofallback
+meson setup build --wrap-mode=nofallback
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm -rf pipewire-src
+fdo_log_section_end install_pipewire
 
 # seatd lets us avoid the pain of open-coding TTY assignment within Weston.
 # We use this for our tests using the DRM backend.
+fdo_log_section_start_collapsed install_seatd "install_seatd"
 git clone --depth=1 --branch 0.6.1 https://git.sr.ht/~kennylevinsen/seatd
 cd seatd
-meson build --wrap-mode=nofallback -Dauto_features=disabled \
+meson setup build --wrap-mode=nofallback -Dauto_features=disabled \
 	-Dlibseat-seatd=enabled -Dlibseat-logind=systemd -Dserver=enabled
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm -rf seatd
+fdo_log_section_end install_seatd
 
 # Build and install aml and neatvnc, which are required for the VNC backend
+fdo_log_section_start_collapsed install_aml_neatvnc "install_aml_neatvnc"
 git clone --branch v0.3.0 --depth=1 https://github.com/any1/aml.git
 cd aml
-meson build --wrap-mode=nofallback
+meson setup build --wrap-mode=nofallback
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm -rf aml
 git clone --branch v0.7.0 --depth=1 https://github.com/any1/neatvnc.git
 cd neatvnc
-meson build --wrap-mode=nofallback -Dauto_features=disabled
+meson setup build --wrap-mode=nofallback -Dauto_features=disabled
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm -rf neatvnc
+fdo_log_section_end install_aml_neatvnc
 
 # Build and install libdisplay-info, used by drm-backend
-git clone --branch 0.1.1 --depth=1 https://gitlab.freedesktop.org/emersion/libdisplay-info.git
+fdo_log_section_start_collapsed install_libdisplay-info "install_libdisplay-info"
+git clone --branch 0.2.0 --depth=1 https://gitlab.freedesktop.org/emersion/libdisplay-info.git
 cd libdisplay-info
-meson build --wrap-mode=nofallback
+meson setup build --wrap-mode=nofallback
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm -rf libdisplay-info
+fdo_log_section_end install_libdisplay-info
 
 # Build and install lcms2, which we use to support color-management.
+fdo_log_section_start_collapsed install_lcms2 "install_lcms2"
 git clone --branch master https://github.com/mm2/Little-CMS.git lcms2
 cd lcms2
 git checkout -b snapshot lcms2.16
-meson build --wrap-mode=nofallback
+meson setup build --wrap-mode=nofallback
 ninja ${NINJAFLAGS} -C build install
 cd ..
 rm  -rf lcms2
+fdo_log_section_end install_lcms2

@@ -14,6 +14,8 @@ srcs_toytoolkit = [
 	relative_pointer_unstable_v1_protocol_c,
 	pointer_constraints_unstable_v1_client_protocol_h,
 	pointer_constraints_unstable_v1_protocol_c,
+	single_pixel_buffer_v1_client_protocol_h,
+	single_pixel_buffer_v1_protocol_c,
 	tablet_unstable_v2_client_protocol_h,
 	tablet_unstable_v2_protocol_c,
 	ivi_application_client_protocol_h,
@@ -162,6 +164,21 @@ simple_clients = [
 		'dep_objs': [ dep_wayland_client, dep_libshared ]
 	},
 	{
+		'name': 'timing',
+		'sources': [
+			'simple-timing.c',
+			xdg_shell_client_protocol_h,
+			xdg_shell_protocol_c,
+			commit_timing_v1_client_protocol_h,
+			commit_timing_v1_protocol_c,
+			fifo_v1_client_protocol_h,
+			fifo_v1_protocol_c,
+			presentation_time_client_protocol_h,
+			presentation_time_protocol_c,
+		],
+		'dep_objs': [ dep_wayland_client, dep_libshared ]
+	},
+	{
 		'name': 'touch',
 		'sources': [
 			'simple-touch.c',
@@ -171,6 +188,89 @@ simple_clients = [
 		'dep_objs': [ dep_wayland_client, dep_libshared ]
 	},
 ]
+
+if dep_vulkan.found() and prog_glslang.found()
+	srcs_simple_vulkan_shaders = [
+		'simple_vulkan_vertex_shader.vert',
+		'simple_vulkan_fragment_shader.frag',
+	]
+
+	simple_vulkan_shaders = []
+	foreach s : srcs_simple_vulkan_shaders
+		simple_vulkan_shaders += custom_target(s + '.spv.h',
+			command: [ prog_glslang, '@INPUT@', '--quiet', '--variable-name', '@BASENAME@', '-V', '-x', '-o', '@OUTPUT@' ],
+			input: s,
+			output: '@BASENAME@.spv.h',
+		)
+	endforeach
+
+	simple_clients += {
+		'name': 'vulkan',
+		'sources': [
+			'simple-vulkan.c',
+			simple_vulkan_shaders,
+			fractional_scale_v1_client_protocol_h,
+			fractional_scale_v1_protocol_c,
+			tearing_control_v1_client_protocol_h,
+			tearing_control_v1_protocol_c,
+			viewporter_client_protocol_h,
+			viewporter_protocol_c,
+			xdg_shell_client_protocol_h,
+			xdg_shell_protocol_c,
+		],
+		'dep_objs': [
+			dep_vulkan,
+			dep_libm,
+			dep_libshared,
+			dep_matrix_c,
+			dep_wayland_client,
+		],
+		'deps': [ 'vulkan', 'wayland-cursor' ],
+		'options': [ 'renderer-gl' ]
+	}
+
+	srcs_simple_dmabuf_vulkan_shaders = [
+		'simple_dmabuf_vulkan_vertex_shader.vert',
+		'simple_dmabuf_vulkan_fragment_shader.frag',
+	]
+
+	simple_dmabuf_vulkan_shaders = []
+	foreach s : srcs_simple_dmabuf_vulkan_shaders
+		simple_dmabuf_vulkan_shaders += custom_target(s + '.spv.h',
+			command: [ prog_glslang, '@INPUT@', '--quiet', '--variable-name', '@BASENAME@', '-V', '-x', '-o', '@OUTPUT@' ],
+			input: s,
+			output: '@BASENAME@.spv.h',
+		)
+	endforeach
+
+	simple_clients += {
+		'name': 'dmabuf-vulkan',
+		'sources': [
+			'simple-dmabuf-vulkan.c',
+			simple_dmabuf_vulkan_shaders,
+			linux_dmabuf_unstable_v1_client_protocol_h,
+			linux_dmabuf_unstable_v1_protocol_c,
+			linux_explicit_synchronization_unstable_v1_client_protocol_h,
+			linux_explicit_synchronization_unstable_v1_protocol_c,
+			xdg_shell_client_protocol_h,
+			xdg_shell_protocol_c,
+			weston_direct_display_client_protocol_h,
+			weston_direct_display_protocol_c,
+		],
+		'dep_objs': [
+			dep_vulkan,
+                        dep_libdrm_headers,
+			dep_libm,
+			dep_libdrm,
+			dep_libshared,
+			dep_matrix_c,
+			dep_wayland_client,
+			dep_libweston_private, # for pixel-formats.h
+		],
+		'deps': [ 'vulkan', 'wayland-cursor', 'gbm' ],
+		'options': [ 'renderer-gl' ]
+	}
+endif
 
 foreach t : simple_clients
 	if simple_build_all or simple_clients_enabled.contains(t.get('name'))
@@ -268,6 +368,15 @@ demo_clients = [
 	{
 		'basename': 'cliptest',
 		'dep_objs': [ dep_vertex_clipping, dep_matrix_c ]
+	},
+	{
+		'basename': 'color',
+		'add_sources': [
+			color_management_v1_client_protocol_h,
+			color_management_v1_protocol_c,
+			single_pixel_buffer_v1_client_protocol_h,
+			single_pixel_buffer_v1_protocol_c,
+		],
 	},
 	{
 		'basename': 'constraints',
@@ -391,7 +500,7 @@ if get_option('shell-desktop')
 	env_modmap += 'weston-desktop-shell=@0@;'.format(exe_shell_desktop.full_path())
 endif
 
-if get_option('shell-desktop') or get_option('shell-fullscreen') or get_option('shell-kiosk') or get_option('shell-ivi')
+if get_option('shell-desktop') or get_option('deprecated-shell-fullscreen') or get_option('shell-kiosk') or get_option('shell-ivi')
 	exe_shooter = executable(
 		'weston-screenshooter',
 		'screenshot.c',
@@ -399,6 +508,7 @@ if get_option('shell-desktop') or get_option('shell-fullscreen') or get_option('
 		weston_output_capture_protocol_c,
 		include_directories: common_inc,
 		dependencies: [
+			dep_client_buffer,
 			dep_toytoolkit,
 			dep_libweston_private, # for pixel-formats.h
 			dep_pixman,

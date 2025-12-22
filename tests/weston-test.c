@@ -83,6 +83,7 @@ struct weston_test_output {
 	struct weston_test *test;
 	struct weston_output *output;
 	struct wl_listener repaint_listener;
+	struct wl_listener post_latch_listener;
 	struct wl_list link;
 };
 
@@ -139,6 +140,20 @@ output_repaint_listener(struct wl_listener *listener, void *data)
 }
 
 static void
+output_post_latch_listener(struct wl_listener *listener, void *data)
+{
+	struct weston_test_output *to =
+		container_of(listener, struct weston_test_output,
+			     post_latch_listener);
+	struct weston_head *head;
+
+	wl_list_for_each(head, &to->output->head_list, output_link) {
+		maybe_breakpoint(to->test, WESTON_TEST_BREAKPOINT_POST_LATCH,
+				 head);
+	}
+}
+
+static void
 output_created_listener(struct wl_listener *listener, void *data)
 {
 	struct weston_output *output = data;
@@ -149,8 +164,13 @@ output_created_listener(struct wl_listener *listener, void *data)
 
 	to->test = test;
 	to->output = output;
+
 	to->repaint_listener.notify = output_repaint_listener;
 	wl_signal_add(&output->frame_signal, &to->repaint_listener);
+
+	to->post_latch_listener.notify = output_post_latch_listener;
+	wl_signal_add(&output->post_latch_signal, &to->post_latch_listener);
+
 	wl_list_insert(&test->output_list, &to->link);
 }
 
@@ -168,6 +188,7 @@ output_destroyed_listener(struct wl_listener *listener, void *data)
 			continue;
 
 		wl_list_remove(&to->repaint_listener.link);
+		wl_list_remove(&to->post_latch_listener.link);
 		wl_list_remove(&to->link);
 		free(to);
 	}
@@ -213,8 +234,12 @@ test_seat_init(struct weston_test *test)
 
 	/* add devices */
 	weston_seat_init_pointer(&test->seat);
-	if (weston_seat_init_keyboard(&test->seat, NULL) < 0)
+	if (weston_seat_init_keyboard(&test->seat, NULL) < 0) {
+		weston_seat_release_pointer(&test->seat);
+		weston_seat_release(&test->seat);
+		test->is_seat_initialized = false;
 		return -1;
+	}
 	weston_seat_init_touch(&test->seat);
 	touch_device_add(test);
 
@@ -818,8 +843,7 @@ handle_compositor_destroy(struct wl_listener *listener,
 
 	data->wl_client = NULL;
 
-	wl_list_remove(&test->layer.view_list.link);
-	wl_list_remove(&test->layer.link);
+	weston_layer_fini(&test->layer);
 
 	weston_log_scope_destroy(test->log);
 	free(test);
@@ -832,6 +856,7 @@ wet_module_init(struct weston_compositor *ec,
 	struct weston_test *test;
 	struct weston_output *output;
 	struct wl_event_loop *loop;
+	struct weston_test_output *to, *tmp;
 
 	test = zalloc(sizeof *test);
 	if (test == NULL)
@@ -874,6 +899,19 @@ wet_module_init(struct weston_compositor *ec,
 	return 0;
 
 out_free:
+	if (test->log)
+		weston_log_scope_destroy(test->log);
+
+	wl_list_for_each_safe(to, tmp, &test->output_list, link) {
+		wl_list_remove(&to->repaint_listener.link);
+		wl_list_remove(&to->post_latch_listener.link);
+		wl_list_remove(&to->link);
+		free(to);
+	}
+
+	weston_layer_fini(&test->layer);
+
+	wl_list_remove(&test->output_destroyed_listener.link);
 	wl_list_remove(&test->destroy_listener.link);
 	free(test);
 	return -1;

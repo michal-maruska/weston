@@ -28,15 +28,40 @@
 #include "weston-test-client-helper.h"
 #include "weston-test-fixture-compositor.h"
 #include "weston-output-capture-client-protocol.h"
+#include "weston-test-assert.h"
+
+struct setup_args {
+	struct fixture_metadata meta;
+	enum weston_renderer_type renderer;
+	enum client_buffer_type buffer_type;
+};
+
+static const struct setup_args my_setup_args[] = {
+	{
+		.meta.name = "Pixman",
+		.renderer = WESTON_RENDERER_PIXMAN,
+		.buffer_type = CLIENT_BUFFER_TYPE_SHM,
+	},
+	{
+		.meta.name = "GL - dmabuf",
+		.renderer = WESTON_RENDERER_GL,
+		.buffer_type = CLIENT_BUFFER_TYPE_DMABUF,
+	},
+	{
+		.meta.name = "Vulkan - dmabuf",
+		.renderer = WESTON_RENDERER_VULKAN,
+		.buffer_type = CLIENT_BUFFER_TYPE_DMABUF,
+	},
+};
 
 static enum test_result_code
-fixture_setup(struct weston_test_harness *harness)
+fixture_setup(struct weston_test_harness *harness, const struct setup_args *arg)
 {
 	struct compositor_setup setup;
 
 	compositor_setup_defaults(&setup);
 	setup.backend = WESTON_BACKEND_DRM;
-	setup.renderer = WESTON_RENDERER_PIXMAN;
+	setup.renderer = arg->renderer;
 	setup.shell = SHELL_TEST_DESKTOP;
 	setup.logging_scopes = "log,drm-backend";
 
@@ -46,7 +71,7 @@ fixture_setup(struct weston_test_harness *harness)
 
 	return weston_test_harness_execute_as_client(harness, &setup);
 }
-DECLARE_FIXTURE_SETUP(fixture_setup);
+DECLARE_FIXTURE_SETUP_WITH_ARG(fixture_setup, my_setup_args, meta);
 
 static void
 draw_stuff(pixman_image_t *image)
@@ -65,7 +90,7 @@ draw_stuff(pixman_image_t *image)
 	stride = pixman_image_get_stride(image);
 	pixels = pixman_image_get_data(image);
 
-	assert(PIXMAN_FORMAT_BPP(fmt) == 32);
+	test_assert_int_eq(PIXMAN_FORMAT_BPP(fmt), 32);
 
 	for (x = 0; x < w; x++)
 		for (y = 0; y < h; y++) {
@@ -78,10 +103,12 @@ draw_stuff(pixman_image_t *image)
 }
 
 TEST(drm_writeback_screenshot) {
-
+	const struct setup_args *args = &my_setup_args[get_test_fixture_index()];
 	struct client *client;
 	struct buffer *buffer;
+	struct buffer *buffer_for_second_screenshot;
 	struct buffer *screenshot = NULL;
+	struct buffer *second_screenshot = NULL;
 	pixman_image_t *reference = NULL;
 	pixman_image_t *diffimg = NULL;
 	struct wl_surface *surface;
@@ -93,7 +120,7 @@ TEST(drm_writeback_screenshot) {
 	/* create client */
 	testlog("Creating client for test\n");
 	client = create_client_and_test_surface(100, 100, 100, 100);
-	assert(client);
+	test_assert_ptr_not_null(client);
 	surface = client->surface->wl_surface;
 
 	/* move pointer away from image so it does not interfere with the
@@ -112,22 +139,34 @@ TEST(drm_writeback_screenshot) {
 	/* take screenshot */
 	testlog("Taking a screenshot\n");
 	screenshot = client_capture_output(client, client->output,
-                                           WESTON_CAPTURE_V1_SOURCE_WRITEBACK);
-	assert(screenshot);
+					   WESTON_CAPTURE_V1_SOURCE_WRITEBACK,
+					   args->buffer_type);
+	test_assert_ptr_not_null(screenshot);
 	buffer_destroy(screenshot);
+
+	/* Use new buffer to avoid deadlock between first and second screenshot. */
+	buffer_for_second_screenshot = create_shm_buffer_a8r8g8b8(client, 100, 100);
+	draw_stuff(buffer_for_second_screenshot->image);
+
+	wl_surface_attach(surface, buffer_for_second_screenshot->proxy, 0, 0);
+	wl_surface_damage(surface, 0, 0, 100, 100);
+	frame_callback_set(surface, &frame);
+	wl_surface_commit(surface);
+	frame_callback_wait(client, &frame);
 
 	/* take another screenshot; this is important to ensure the
 	 * writeback state machine is working correctly */
 	testlog("Taking another screenshot\n");
-	screenshot = client_capture_output(client, client->output,
-                                           WESTON_CAPTURE_V1_SOURCE_WRITEBACK);
-	assert(screenshot);
+	second_screenshot = client_capture_output(client, client->output,
+						  WESTON_CAPTURE_V1_SOURCE_WRITEBACK,
+						  args->buffer_type);
+	test_assert_ptr_not_null(second_screenshot);
 
 	/* load reference image */
 	fname = screenshot_reference_filename("drm-writeback-screenshot", 0);
 	testlog("Loading good reference image %s\n", fname);
 	reference = load_image_from_png(fname);
-	assert(reference);
+	test_assert_ptr_not_null(reference);
 	free(fname);
 
 	/* check if they match - only the colored square matters, so the
@@ -136,20 +175,25 @@ TEST(drm_writeback_screenshot) {
 	clip.y = 100;
 	clip.width = 100;
 	clip.height = 100;
-	match = check_images_match(screenshot->image, reference, &clip, NULL);
+	client_buffer_util_maybe_sync_dmabuf_start(second_screenshot->buf);
+	match = check_images_match(second_screenshot->image, reference, &clip, NULL);
 	testlog("Screenshot %s reference image\n", match? "equal to" : "different from");
 	if (!match) {
-		diffimg = visualize_image_difference(screenshot->image, reference, &clip, NULL);
+		diffimg = visualize_image_difference(second_screenshot->image, reference, &clip, NULL);
 		fname = output_filename_for_test_case("error", 0, "png");
 		write_image_as_png(diffimg, fname);
 		pixman_image_unref(diffimg);
 		free(fname);
 	}
+	client_buffer_util_maybe_sync_dmabuf_end(second_screenshot->buf);
 
 	pixman_image_unref(reference);
-	buffer_destroy(screenshot);
+	buffer_destroy(second_screenshot);
 	buffer_destroy(buffer);
+	buffer_destroy(buffer_for_second_screenshot);
 	client_destroy(client);
 
-	assert(match);
+	test_assert_true(match);
+
+	return RESULT_OK;
 }

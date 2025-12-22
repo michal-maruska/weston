@@ -47,6 +47,7 @@ fixture_setup(struct weston_test_harness *harness)
 
 	compositor_setup_defaults(&setup);
 	setup.shell = SHELL_IVI;
+	setup.refresh = HIGHEST_OUTPUT_REFRESH;
 
 	return weston_test_harness_execute_as_plugin(harness, &setup);
 }
@@ -783,11 +784,13 @@ PLUGIN_TEST(ivi_layout_internal)
 	if (!iface) {
 		weston_log("fatal: cannot use ivi_layout_interface.\n");
 		weston_compositor_exit_with_code(compositor, RESULT_HARD_ERROR);
-		return;
+		return RESULT_HARD_ERROR;
 	}
 
 	ctx.compositor = compositor;
 	ctx.layout_interface = iface;
 
 	run_internal_tests(&ctx);
+
+	return RESULT_OK;
 }

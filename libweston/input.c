@@ -85,13 +85,6 @@ empty_region(pixman_region32_t *region)
 }
 
 static void
-region_init_infinite(pixman_region32_t *region)
-{
-	pixman_region32_init_rect(region, INT32_MIN, INT32_MIN,
-				  UINT32_MAX, UINT32_MAX);
-}
-
-static void
 send_timestamp(struct wl_resource *resource,
 	       const struct timespec *time)
 {
@@ -494,6 +487,75 @@ default_grab_pointer_focus(struct weston_pointer_grab *grab)
 		weston_pointer_set_focus(pointer, view);
 }
 
+static struct weston_coord_global
+weston_pointer_clamp_for_output(struct weston_pointer *pointer,
+				struct weston_output *output,
+				struct weston_coord_global pos)
+{
+	return weston_coord_global_clamp_for_output(pos, output);
+}
+
+WL_EXPORT struct weston_coord_global
+weston_pointer_clamp(struct weston_pointer *pointer, struct weston_coord_global pos)
+{
+	struct weston_compositor *ec = pointer->seat->compositor;
+	struct weston_output *output, *prev = NULL;
+	int valid = 0;
+
+	wl_list_for_each(output, &ec->output_list, link) {
+		if (pointer->seat->output && pointer->seat->output != output)
+			continue;
+		if (weston_output_contains_coord(output, pos))
+			valid = 1;
+		if (weston_output_contains_coord(output, pointer->pos))
+			prev = output;
+	}
+
+	if (!prev)
+		prev = pointer->seat->output;
+
+	if (prev && !valid)
+		pos = weston_pointer_clamp_for_output(pointer, prev, pos);
+
+	return pos;
+}
+
+static void
+weston_pointer_move_to_preclamped(struct weston_pointer *pointer,
+				  struct weston_coord_global pos)
+{
+	pointer->pos = pos;
+
+	if (pointer->sprite) {
+		struct weston_coord_surface hotspot_inv;
+
+		hotspot_inv = weston_coord_surface_invert(pointer->hotspot);
+		weston_view_set_position_with_offset(pointer->sprite,
+						     pos, hotspot_inv);
+	}
+
+	pointer->grab->interface->focus(pointer->grab);
+	wl_signal_emit(&pointer->motion_signal, pointer);
+}
+
+static void
+weston_pointer_move_to(struct weston_pointer *pointer,
+		       struct weston_coord_global pos)
+{
+	pos = weston_pointer_clamp(pointer, pos);
+	weston_pointer_move_to_preclamped(pointer, pos);
+}
+
+WL_EXPORT void
+weston_pointer_move(struct weston_pointer *pointer,
+		    struct weston_pointer_motion_event *event)
+{
+	struct weston_coord_global pos;
+
+	pos = weston_pointer_motion_to_abs(pointer, event);
+	weston_pointer_move_to(pointer, pos);
+}
+
 static void
 pointer_send_relative_motion(struct weston_pointer *pointer,
 			     const struct timespec *time,
@@ -559,12 +621,14 @@ weston_pointer_send_motion(struct weston_pointer *pointer,
 	wl_fixed_t old_sx;
 	wl_fixed_t old_sy;
 	struct weston_view *old_focus = pointer->focus;
+	struct weston_coord_global pos;
+
+	pos = weston_pointer_motion_to_abs(pointer, event);
+	pos = weston_pointer_clamp(pointer,pos);
 
 	if (pointer->focus) {
-		struct weston_coord_global pos;
 		struct weston_coord_surface surf_pos;
 
-		pos = weston_pointer_motion_to_abs(pointer, event);
 		old_sx = pointer->sx;
 		old_sy = pointer->sy;
 		weston_view_update_transform(pointer->focus);
@@ -577,7 +641,7 @@ weston_pointer_send_motion(struct weston_pointer *pointer,
 		old_sy = -1000000;
 	}
 
-	weston_pointer_move(pointer, event);
+	weston_pointer_move_to_preclamped(pointer, pos);
 
 	if (pointer->focus && old_focus == pointer->focus &&
 	    (old_sx != pointer->sx || old_sy != pointer->sy)) {
@@ -1919,6 +1983,8 @@ weston_pointer_set_focus(struct weston_pointer *pointer,
 	int refocus = 0;
 	wl_fixed_t sx, sy;
 
+	sx = sy = wl_fixed_from_int(-999999); /* poison */
+
 	if (view) {
 		struct weston_coord_surface surf_pos;
 
@@ -2139,69 +2205,6 @@ static void
 weston_touch_cancel_grab(struct weston_touch *touch)
 {
 	touch->grab->interface->cancel(touch->grab);
-}
-
-static struct weston_coord_global
-weston_pointer_clamp_for_output(struct weston_pointer *pointer,
-				struct weston_output *output,
-				struct weston_coord_global pos)
-{
-	return weston_coord_global_clamp_for_output(pos, output);
-}
-
-WL_EXPORT struct weston_coord_global
-weston_pointer_clamp(struct weston_pointer *pointer, struct weston_coord_global pos)
-{
-	struct weston_compositor *ec = pointer->seat->compositor;
-	struct weston_output *output, *prev = NULL;
-	int valid = 0;
-
-	wl_list_for_each(output, &ec->output_list, link) {
-		if (pointer->seat->output && pointer->seat->output != output)
-			continue;
-		if (weston_output_contains_coord(output, pos))
-			valid = 1;
-		if (weston_output_contains_coord(output, pointer->pos))
-			prev = output;
-	}
-
-	if (!prev)
-		prev = pointer->seat->output;
-
-	if (prev && !valid)
-		pos = weston_pointer_clamp_for_output(pointer, prev, pos);
-
-	return pos;
-}
-
-static void
-weston_pointer_move_to(struct weston_pointer *pointer,
-		       struct weston_coord_global pos)
-{
-	pos = weston_pointer_clamp(pointer, pos);
-
-	pointer->pos = pos;
-
-	if (pointer->sprite) {
-		struct weston_coord_surface hotspot_inv;
-
-		hotspot_inv = weston_coord_surface_invert(pointer->hotspot);
-		weston_view_set_position_with_offset(pointer->sprite,
-						     pos, hotspot_inv);
-	}
-
-	pointer->grab->interface->focus(pointer->grab);
-	wl_signal_emit(&pointer->motion_signal, pointer);
-}
-
-WL_EXPORT void
-weston_pointer_move(struct weston_pointer *pointer,
-		    struct weston_pointer_motion_event *event)
-{
-	struct weston_coord_global pos;
-
-	pos = weston_pointer_motion_to_abs(pointer, event);
-	weston_pointer_move_to(pointer, pos);
 }
 
 /** Verify if the pointer is in a valid position and move it if it isn't.
@@ -2518,13 +2521,21 @@ notify_modifiers(struct weston_seat *seat, uint32_t serial)
 	/* Finally, notify the compositor that LEDs have changed. */
 	if (xkb_state_led_index_is_active(keyboard->xkb_state.state,
 					  keyboard->xkb_info->num_led))
-		leds |= LED_NUM_LOCK;
+		leds |= WESTON_LED_NUM_LOCK;
 	if (xkb_state_led_index_is_active(keyboard->xkb_state.state,
 					  keyboard->xkb_info->caps_led))
-		leds |= LED_CAPS_LOCK;
+		leds |= WESTON_LED_CAPS_LOCK;
 	if (xkb_state_led_index_is_active(keyboard->xkb_state.state,
 					  keyboard->xkb_info->scroll_led))
-		leds |= LED_SCROLL_LOCK;
+		leds |= WESTON_LED_SCROLL_LOCK;
+#ifdef HAVE_COMPOSE_AND_KANA
+	if (xkb_state_led_index_is_active(keyboard->xkb_state.state,
+					  keyboard->xkb_info->compose_led))
+		leds |= WESTON_LED_COMPOSE;
+	if (xkb_state_led_index_is_active(keyboard->xkb_state.state,
+					  keyboard->xkb_info->kana_led))
+		leds |= WESTON_LED_KANA;
+#endif
 	if (leds != keyboard->xkb_state.leds && seat->led_update)
 		seat->led_update(seat, leds);
 	keyboard->xkb_state.leds = leds;
@@ -2677,6 +2688,7 @@ notify_key(struct weston_seat *seat, const struct timespec *time, uint32_t key,
 			if (state == WL_KEYBOARD_KEY_STATE_PRESSED)
 				return;
 			*k = *--end;
+			break;
 		}
 	}
 	keyboard->keys.size = (void *) end - keyboard->keys.data;
@@ -4017,6 +4029,12 @@ weston_xkb_info_create(struct xkb_keymap *keymap)
 						      XKB_LED_NAME_CAPS);
 	xkb_info->scroll_led = xkb_keymap_led_get_index(xkb_info->keymap,
 							XKB_LED_NAME_SCROLL);
+#ifdef HAVE_COMPOSE_AND_KANA
+	xkb_info->compose_led = xkb_keymap_led_get_index(xkb_info->keymap,
+							XKB_LED_NAME_COMPOSE);
+	xkb_info->kana_led = xkb_keymap_led_get_index(xkb_info->keymap,
+							XKB_LED_NAME_KANA);
+#endif
 
 	keymap_string = xkb_keymap_get_as_string(xkb_info->keymap,
 							   XKB_KEYMAP_FORMAT_TEXT_V1);
@@ -4869,7 +4887,6 @@ pointer_constraint_surface_committed(struct wl_listener *listener, void *data)
 	if (constraint->hint_is_pending) {
 		constraint->hint_is_pending = false;
 
-		constraint->hint_is_pending = true;
 		constraint->hint = constraint->hint_pending;
 	}
 

@@ -7,6 +7,7 @@ deps_libweston = [
 	dep_xkbcommon,
 	dep_matrix_c,
 	dep_egl,
+	dep_vulkan,
 ]
 srcs_libweston = [
 	git_version_h,
@@ -17,12 +18,16 @@ srcs_libweston = [
 	'color.c',
 	'color-properties.c',
 	'color-management.c',
+	'color-representation.c',
 	'color-noop.c',
+	'color-operations.c',
 	'color-profile-param-builder.c',
 	'compositor.c',
 	'content-protection.c',
+	'commit-timing.c',
 	'data-device.c',
 	'drm-formats.c',
+	'fifo.c',
 	'id-number-allocator.c',
 	'input.c',
 	'linux-dmabuf.c',
@@ -35,6 +40,7 @@ srcs_libweston = [
 	'pixman-renderer.c',
 	'plugin-registry.c',
 	'screenshooter.c',
+	'surface-state.c',
 	'timeline.c',
 	'touch-calibration.c',
 	'weston-log-wayland.c',
@@ -44,6 +50,12 @@ srcs_libweston = [
 	'weston-direct-display.c',
 	color_management_v1_protocol_c,
 	color_management_v1_server_protocol_h,
+	color_representation_v1_protocol_c,
+	color_representation_v1_server_protocol_h,
+	commit_timing_v1_protocol_c,
+	commit_timing_v1_server_protocol_h,
+	fifo_v1_protocol_c,
+	fifo_v1_server_protocol_h,
 	linux_dmabuf_unstable_v1_protocol_c,
 	linux_dmabuf_unstable_v1_server_protocol_h,
 	linux_explicit_synchronization_unstable_v1_protocol_c,
@@ -88,11 +100,14 @@ subdir('desktop')
 subdir('shell-utils')
 
 dep_gbm = dependency('gbm', required: false, version: '>= 21.1.1')
+if dep_gbm.found()
+	config_h.set('HAVE_GBM', '1')
+endif
 
 if get_option('backend-vnc')
 	dep_pam = dependency('pam', required: false)
 	if not dep_pam.found()
-		dep_pam = cc.find_library('pam')
+		dep_pam = cc.find_library('pam', required: false)
 	endif
 	if not dep_pam.found()
 		error('VNC backend requires libpam which was not found. Or, you can use \'-Dbackend-vnc=false\'.')
@@ -101,11 +116,23 @@ if get_option('backend-vnc')
 	deps_libweston += dep_pam
 endif
 
+if get_option('perfetto')
+	srcs_libweston += [
+		'perfetto/u_perfetto.cc',
+		'perfetto/u_perfetto.h',
+		'timeline-perfetto.c'
+	]
+	dep_perfetto = dependency('perfetto', fallback: ['perfetto', 'dep_perfetto'])
+	deps_libweston += dep_perfetto
+	config_h.set('HAVE_PERFETTO', '1')
+endif
+
 lib_weston = shared_library(
 	'weston-@0@'.format(libweston_major),
 	srcs_libweston,
 	include_directories: common_inc,
 	install: true,
+	cpp_args: '-std=c++17',
 	version: '0.0.@0@'.format(libweston_revision),
 	link_whole: lib_libshared,
 	dependencies: deps_libweston
@@ -207,9 +234,9 @@ dep_vertex_clipping = declare_dependency(
 	include_directories: include_directories('.')
 )
 
-lib_gl_borders = static_library(
-	'gl-borders',
-	'gl-borders.c',
+lib_renderer_borders = static_library(
+	'renderer-borders',
+	'renderer-borders.c',
 	include_directories: common_inc,
 	dependencies: [
 		dep_lib_cairo_shared,
@@ -219,13 +246,14 @@ lib_gl_borders = static_library(
 	build_by_default: false,
 	install: false
 )
-dep_lib_gl_borders = declare_dependency(
-	link_with: lib_gl_borders,
+dep_lib_renderer_borders = declare_dependency(
+	link_with: lib_renderer_borders,
 	dependencies: dep_lib_cairo_shared
 )
 
 subdir('color-lcms')
 subdir('renderer-gl')
+subdir('renderer-vulkan')
 subdir('backend-drm')
 subdir('backend-headless')
 subdir('backend-pipewire')

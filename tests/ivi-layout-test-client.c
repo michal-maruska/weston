@@ -35,6 +35,7 @@
 #include "ivi-application-client-protocol.h"
 #include "ivi-test.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
 
 static enum test_result_code
 fixture_setup(struct weston_test_harness *harness)
@@ -43,6 +44,7 @@ fixture_setup(struct weston_test_harness *harness)
 
 	compositor_setup_defaults(&setup);
 	setup.shell = SHELL_IVI;
+	setup.refresh = HIGHEST_OUTPUT_REFRESH;
 	setup.extra_module = "test-ivi-layout.so";
 
 	return weston_test_harness_execute_as_client(harness, &setup);
@@ -82,19 +84,19 @@ client_create_runner(struct client *client)
 			continue;
 
 		if (global_runner)
-			assert(0 && "multiple weston_test_runner objects");
+			test_assert_not_reached("multiple weston_test_runner objects");
 
 		global_runner = g;
 	}
 
-	assert(global_runner && "no weston_test_runner found");
-	assert(global_runner->version == 1);
+	test_assert_ptr_not_null(global_runner);
+	test_assert_u32_eq(global_runner->version, 1);
 
 	runner->test_runner = wl_registry_bind(client->wl_registry,
 					       global_runner->name,
 					       &weston_test_runner_interface,
 					       1);
-	assert(runner->test_runner);
+	test_assert_ptr_not_null(runner->test_runner);
 
 	weston_test_runner_add_listener(runner->test_runner,
 					&test_runner_listener, runner);
@@ -120,7 +122,7 @@ runner_run(struct runner *runner, const char *test_name)
 
 	while (!runner->done) {
 		if (wl_display_dispatch(runner->client->wl_display) < 0)
-			assert(0 && "runner wait");
+			test_assert_not_reached("runner wait");
 	}
 }
 
@@ -136,18 +138,18 @@ get_ivi_application(struct client *client)
 			continue;
 
 		if (global_iviapp)
-			assert(0 && "multiple ivi_application objects");
+			test_assert_not_reached("multiple ivi_application objects");
 
 		global_iviapp = g;
 	}
 
-	assert(global_iviapp && "no ivi_application found");
+	test_assert_ptr_not_null(global_iviapp);
 
-	assert(global_iviapp->version == 1);
+	test_assert_u32_eq(global_iviapp->version, 1);
 
 	iviapp = wl_registry_bind(client->wl_registry, global_iviapp->name,
 				  &ivi_application_interface, 1);
-	assert(iviapp);
+	test_assert_ptr_not_null(iviapp);
 
 	return iviapp;
 }
@@ -241,6 +243,8 @@ TEST_P(ivi_layout_runner, basic_test_names)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(ivi_layout_surface_create)
@@ -269,6 +273,8 @@ TEST(ivi_layout_surface_create)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST_P(commit_changes_after_properties_set_surface_destroy, surface_property_commit_changes_test_names)
@@ -295,6 +301,8 @@ TEST_P(commit_changes_after_properties_set_surface_destroy, surface_property_com
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(get_surface_after_destroy_ivi_surface)
@@ -319,6 +327,8 @@ TEST(get_surface_after_destroy_ivi_surface)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(get_surface_after_destroy_wl_surface)
@@ -343,6 +353,8 @@ TEST(get_surface_after_destroy_wl_surface)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST_P(ivi_layout_layer_render_order_runner, render_order_test_names)
@@ -373,6 +385,8 @@ TEST_P(ivi_layout_layer_render_order_runner, render_order_test_names)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(destroy_surface_after_layer_render_order)
@@ -404,6 +418,8 @@ TEST(destroy_surface_after_layer_render_order)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(commit_changes_after_render_order_set_surface_destroy)
@@ -436,6 +452,8 @@ TEST(commit_changes_after_render_order_set_surface_destroy)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(ivi_layout_surface_configure_notification)
@@ -445,6 +463,7 @@ TEST(ivi_layout_surface_configure_notification)
 	struct ivi_application *iviapp;
 	struct ivi_window *wind;
 	struct buffer *buffer;
+	pixman_color_t black;
 
 	client = create_client();
 	runner = client_create_runner(client);
@@ -454,7 +473,8 @@ TEST(ivi_layout_surface_configure_notification)
 
 	wind = client_create_ivi_window(client, iviapp, IVI_TEST_SURFACE_ID(0));
 
-	buffer = create_shm_buffer_a8r8g8b8(client, 200, 300);
+	color_rgb888(&black, 0, 0, 0);
+	buffer = create_shm_buffer_solid(client, 200, 300, &black);
 
 	wl_surface_attach(wind->wl_surface, buffer->proxy, 0, 0);
 	wl_surface_damage(wind->wl_surface, 0, 0, 20, 30);
@@ -473,6 +493,8 @@ TEST(ivi_layout_surface_configure_notification)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(ivi_layout_surface_create_notification)
@@ -500,6 +522,8 @@ TEST(ivi_layout_surface_create_notification)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(ivi_layout_surface_remove_notification)
@@ -526,4 +550,6 @@ TEST(ivi_layout_surface_remove_notification)
 	runner_destroy(runner);
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }

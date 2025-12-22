@@ -31,6 +31,7 @@
 
 #include "weston-test-client-helper.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
 
 #define RENDERERS(s, t)							\
 	{								\
@@ -50,12 +51,12 @@
 		.meta.name = "GL no-shadow " #s " " #t,			\
 	},								\
 	{								\
-		.renderer = WESTON_RENDERER_GL,				\
+		.renderer = WESTON_RENDERER_VULKAN,			\
 		.scale = s,						\
 		.transform = WL_OUTPUT_TRANSFORM_ ## t,			\
 		.transform_name = #t,					\
-		.gl_shadow_fb = true,					\
-		.meta.name = "GL shadow " #s " " #t,			\
+		.gl_shadow_fb = false,					\
+		.meta.name = "Vulkan " #s " " #t,			\
 	}
 
 struct setup_args {
@@ -111,9 +112,9 @@ fixture_setup(struct weston_test_harness *harness, const struct setup_args *arg)
 	 * Then the test checks that only the damage area gets the new color
 	 * on screen.
 	 *
-	 * The following quirk forces GL-renderer to update the whole texture
-	 * even for partial damage. Otherwise, GL-renderer would only copy the
-	 * damaged area from the wl_shm buffer into a GL texture.
+	 * The following quirk forces GL-renderer and Vulkan-renderer to update
+	 * the whole texture even for partial damage. Otherwise, they would
+	 * only copy the damaged area from the wl_shm buffer into a texture.
 	 *
 	 * Those output_damage tests where the surface is scaled up by the
 	 * compositor will use bilinear texture sampling due to the policy
@@ -121,14 +122,15 @@ fixture_setup(struct weston_test_harness *harness, const struct setup_args *arg)
 	 *
 	 * Pixman renderer never makes copies of wl_shm buffers, so bilinear
 	 * sampling there will always produce the expected result. However,
-	 * with GL-renderer if the texture is not updated beyond the strict
-	 * damage region, bilinear sampling will result in a blend of the old
-	 * and new colors at the edges of the damage rectangles. This blend
-	 * would be detrimental to testing the damage regions and would cause
-	 * test failures due to reference image mismatch. What we actually
-	 * want to see is the crisp outline of the damage rectangles.
+	 * with GL-renderer and Vulkan-renderer if the texture is not updated
+	 * beyond the strict damage region, bilinear sampling will result in a
+	 * blend of the old and new colors at the edges of the damage
+	 * rectangles. This blend would be detrimental to testing the damage
+	 * regions and would cause test failures due to reference image
+	 * mismatch. What we actually want to see is the crisp outline of the
+	 * damage rectangles.
 	 */
-	setup.test_quirks.gl_force_full_upload = true;
+	setup.test_quirks.force_full_upload = true;
 
 	if (arg->gl_shadow_fb) {
 		/*
@@ -199,7 +201,7 @@ TEST(output_damage)
 
 	ret = asprintf(&refname, "output-damage_%d-%s",
 		       oargs->scale, oargs->transform_name);
-	assert(ret);
+	test_assert_int_ne(ret, 0);
 
 	testlog("%s: %s\n", get_test_name(), refname);
 
@@ -208,10 +210,8 @@ TEST(output_damage)
 	client->surface->width = width;
 	client->surface->height = height;
 
-	for (i = 0; i < COUNT_BUFS; i++) {
-		buf[i] = create_shm_buffer_a8r8g8b8(client, width, height);
-		fill_image_with_color(buf[i]->image, &colors[i]);
-	}
+	for (i = 0; i < COUNT_BUFS; i++)
+		buf[i] = create_shm_buffer_solid(client, width, height, &colors[i]);
 
 	client->surface->buffer = buf[0];
 	move_client_frame_sync(client, 19, 19);
@@ -222,11 +222,13 @@ TEST(output_damage)
 	 */
 	for (i = 1; i < COUNT_BUFS; i++) {
 		commit_buffer_with_damage(client->surface, buf[i], damages[i]);
-		if (!verify_screen_content(client, refname, i, NULL, i, NULL))
+		if (!verify_screen_content(client, refname, i, NULL, i, NULL,
+					   NO_DECORATIONS)) {
 			match = false;
+		}
 	}
 
-	assert(match);
+	test_assert_true(match);
 
 	for (i = 0; i < COUNT_BUFS; i++)
 		buffer_destroy(buf[i]);
@@ -234,4 +236,6 @@ TEST(output_damage)
 	client->surface->buffer = NULL;
 	client_destroy(client);
 	free(refname);
+
+	return RESULT_OK;
 }

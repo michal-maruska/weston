@@ -31,6 +31,8 @@
 
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+#include <libdisplay-info/cta.h>
+#include <libdisplay-info/edid.h>
 #include <libdisplay-info/info.h>
 
 #include "drm-internal.h"
@@ -51,6 +53,10 @@ struct drm_head_info {
 	 * enum weston_colorimetry_mode bits.
 	 */
 	uint32_t colorimetry_mask;
+
+	/* The monitor supported color foramts, combination of
+	 * enum_weston_color_format bits.  */
+	uint32_t color_format_mask;
 };
 
 static void
@@ -227,8 +233,6 @@ parse_modeline(const char *s, drmModeModeInfo *mode)
 	return 0;
 }
 
-#ifdef HAVE_LIBDISPLAY_INFO_HIGH_LEVEL_COLORIMETRY
-
 static uint32_t
 get_eotf_mask(const struct di_info *info)
 {
@@ -284,21 +288,75 @@ get_colorimetry_mask(const struct di_info *info)
 	return mask;
 }
 
-#else /* HAVE_LIBDISPLAY_INFO_HIGH_LEVEL_COLORIMETRY */
-
-static uint32_t
-get_eotf_mask(const struct di_info *info)
+static bool
+has_yuv420_cap_map(const struct di_edid_cta *cta)
 {
-	return WESTON_EOTF_MODE_SDR;
+       const struct di_cta_data_block *const *data_blocks;
+       enum di_cta_data_block_tag db_tag;
+       int i;
+
+       data_blocks = di_edid_cta_get_data_blocks(cta);
+       for (i = 0; data_blocks[i] != NULL; i++) {
+               db_tag = di_cta_data_block_get_tag(data_blocks[i]);
+               if (db_tag == DI_CTA_DATA_BLOCK_YCBCR420_CAP_MAP)
+                       return true;
+       }
+
+       return false;
 }
 
 static uint32_t
-get_colorimetry_mask(const struct di_info *info)
+get_color_format_mask(const struct di_info *info)
 {
-	return WESTON_COLORIMETRY_MODE_DEFAULT;
-}
+       const struct di_edid *edid = di_info_get_edid(info);
+       const struct di_edid_color_encoding_formats *fmts =
+               di_edid_get_color_encoding_formats(edid);
+       const struct di_edid_ext *const *exts = di_edid_get_extensions(edid);
+       uint32_t mask = WESTON_COLOR_FORMAT_AUTO;
+       int i;
 
-#endif /* HAVE_LIBDISPLAY_INFO_HIGH_LEVEL_COLORIMETRY */
+       if (fmts) {
+               if (fmts->rgb444)
+                       mask |= WESTON_COLOR_FORMAT_RGB;
+
+               if (fmts->ycrcb444)
+                       mask |= WESTON_COLOR_FORMAT_YUV444;
+
+               if (fmts->ycrcb422)
+                       mask |= WESTON_COLOR_FORMAT_YUV422;
+       }
+
+       for (i = 0; exts[i] ; i++) {
+               const struct di_edid_cta *cta;
+               const struct di_edid_cta_flags *cta_flags;
+
+               switch (di_edid_ext_get_tag(exts[i])) {
+               case DI_EDID_EXT_CEA:
+                       cta = di_edid_ext_get_cta(exts[i]);
+                       cta_flags = di_edid_cta_get_flags(cta);
+
+                       mask |= WESTON_COLOR_FORMAT_RGB;
+
+                       if (cta_flags->ycc444)
+                               mask |= WESTON_COLOR_FORMAT_YUV444;
+
+                       if (cta_flags->ycc422)
+                               mask |= WESTON_COLOR_FORMAT_YUV422;
+
+                       /* FIXME: YUV420 detection is really complicated,
+                        * do it properly at some point...
+                        */
+                       if (has_yuv420_cap_map(cta))
+                               mask |= WESTON_COLOR_FORMAT_YUV420;
+
+                       break;
+               default:
+                       break;
+               }
+       }
+
+       return mask;
+}
 
 static struct di_info *
 drm_head_info_from_edid(struct drm_head_info *dhi,
@@ -325,6 +383,7 @@ drm_head_info_from_edid(struct drm_head_info *dhi,
 	dhi->serial_number = di_info_get_serial(di_ctx);
 	dhi->eotf_mask = get_eotf_mask(di_ctx);
 	dhi->colorimetry_mask = get_colorimetry_mask(di_ctx);
+	dhi->color_format_mask = get_color_format_mask(di_ctx);
 
 	return di_ctx;
 }
@@ -597,26 +656,46 @@ void
 update_head_from_connector(struct drm_head *head)
 {
 	struct drm_connector *connector = &head->connector;
+	struct drm_backend *b = head->connector.device->backend;
 	drmModeObjectProperties *props = connector->props_drm;
 	drmModeConnector *conn = connector->conn;
+	int vrr_capable;
+	uint32_t vrr_mode_mask = 0;
+	uint32_t conn_id = head->connector.connector_id;
+	bool ret;
 
-	weston_head_set_non_desktop(&head->base,
+	ret = weston_head_set_non_desktop(&head->base,
 				    check_non_desktop(connector, props));
-	weston_head_set_subpixel(&head->base,
+	if (ret)
+		drm_debug(b, "\t[CONN:%d] non-desktop property changed\n", conn_id);
+
+	ret = weston_head_set_subpixel(&head->base,
 				 drm_subpixel_to_wayland(conn->subpixel));
+	if (ret)
+		drm_debug(b, "\t[CONN:%d] subpixel property changed\n", conn_id);
 
-	weston_head_set_physical_size(&head->base, conn->mmWidth, conn->mmHeight);
+	ret = weston_head_set_physical_size(&head->base, conn->mmWidth, conn->mmHeight);
+	if (ret)
+		drm_debug(b, "\t[CONN:%d] physical size changed\n", conn_id);
 
-	weston_head_set_transform(&head->base,
+	ret = weston_head_set_transform(&head->base,
 				  get_panel_orientation(connector, props));
+	if (ret)
+		drm_debug(b, "\t[CONN:%d] transform property changed\n", conn_id);
 
 	/* Unknown connection status is assumed disconnected. */
-	weston_head_set_connection_status(&head->base,
+	ret = weston_head_set_connection_status(&head->base,
 				conn->connection == DRM_MODE_CONNECTED);
+	if (ret)
+		drm_debug(b, "\t[CONN:%d] connection status changed\n", conn_id);
 
 	/* If EDID did not change, skip everything about it */
-	if (!drm_head_maybe_update_display_data(head, props))
+	if (!drm_head_maybe_update_display_data(head, props)) {
+		if (!ret)
+			drm_debug(b, "\t[CONN:%d] Hot-plug event received "
+				  "but no connector changes detected\n", conn_id);
 		return;
+	}
 
 	struct drm_head_info dhi;
 
@@ -630,10 +709,17 @@ update_head_from_connector(struct drm_head *head)
 					dhi.serial_number);
 
 	prune_eotf_modes_by_kms_support(head, &dhi.eotf_mask);
+
 	weston_head_set_supported_eotf_mask(&head->base, dhi.eotf_mask);
 
 	dhi.colorimetry_mask &= drm_head_get_kms_colorimetry_modes(head);
 	weston_head_set_supported_colorimetry_mask(&head->base, dhi.colorimetry_mask);
+
+	vrr_capable = drm_property_get_value(&head->connector.props[WDRM_CONNECTOR_VRR_CAPABLE],
+					      head->connector.props_drm, 0);
+	if (vrr_capable)
+		vrr_mode_mask = WESTON_VRR_MODE_GAME;
+	weston_head_set_supported_vrr_modes_mask(&head->base, vrr_mode_mask);
 
 	drm_head_info_fini(&dhi);
 }

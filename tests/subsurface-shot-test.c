@@ -32,6 +32,7 @@
 
 #include "weston-test-client-helper.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
 
 struct setup_args {
 	struct fixture_metadata meta;
@@ -46,6 +47,10 @@ static const struct setup_args my_setup_args[] = {
 	{
 		.renderer = WESTON_RENDERER_GL,
 		.meta.name = "GL"
+	},
+	{
+		.renderer = WESTON_RENDERER_VULKAN,
+		.meta.name = "Vulkan"
 	},
 };
 
@@ -66,34 +71,6 @@ fixture_setup(struct weston_test_harness *harness, const struct setup_args *arg)
 }
 DECLARE_FIXTURE_SETUP_WITH_ARG(fixture_setup, my_setup_args, meta);
 
-static struct wl_subcompositor *
-get_subcompositor(struct client *client)
-{
-	struct global *g;
-	struct global *global_sub = NULL;
-	struct wl_subcompositor *sub;
-
-	wl_list_for_each(g, &client->global_list, link) {
-		if (strcmp(g->interface, "wl_subcompositor"))
-			continue;
-
-		if (global_sub)
-			assert(0 && "multiple wl_subcompositor objects");
-
-		global_sub = g;
-	}
-
-	assert(global_sub && "no wl_subcompositor found");
-
-	assert(global_sub->version == 1);
-
-	sub = wl_registry_bind(client->wl_registry, global_sub->name,
-			       &wl_subcompositor_interface, 1);
-	assert(sub);
-
-	return sub;
-}
-
 static int
 check_screen(struct client *client,
 	     const char *ref_image,
@@ -104,7 +81,7 @@ check_screen(struct client *client,
 	bool match;
 
 	match = verify_screen_content(client, ref_image, ref_seq_no, clip,
-				      seq_no, NULL);
+				      seq_no, NULL, NO_DECORATIONS);
 
 	return match ? 0 : -1;
 }
@@ -115,8 +92,7 @@ surface_commit_color(struct client *client, struct wl_surface *surface,
 {
 	struct buffer *buf;
 
-	buf = create_shm_buffer_a8r8g8b8(client, width, height);
-	fill_image_with_color(buf->image, color);
+	buf = create_shm_buffer_solid(client, width, height, color);
 	wl_surface_attach(surface, buf->proxy, 0, 0);
 	wl_surface_damage_buffer(surface, 0, 0, width, height);
 	wl_surface_commit(surface);
@@ -145,8 +121,8 @@ TEST(subsurface_recursive_unmap)
 	color_rgb888(&green, 0, 255, 0);
 
 	client = create_client_and_test_surface(100, 50, 100, 100);
-	assert(client);
-	subco = get_subcompositor(client);
+	test_assert_ptr_not_null(client);
+	subco = client_get_subcompositor(client);
 
 	/* move the pointer clearly away from our screenshooting area */
 	weston_test_move_pointer(client->test->weston_test, 0, 1, 0, 2, 30);
@@ -196,7 +172,7 @@ TEST(subsurface_recursive_unmap)
 	surf[1] = NULL;
 	fail += check_screen(client, "subsurface_z_order", 0, &clip, 0);
 
-	assert(fail == 0);
+	test_assert_int_eq(fail, 0);
 
 	for (i = 0; i < ARRAY_LENGTH(sub); i++)
 		if (sub[i])
@@ -212,6 +188,8 @@ TEST(subsurface_recursive_unmap)
 
 	wl_subcompositor_destroy(subco);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(subsurface_z_order)
@@ -235,8 +213,8 @@ TEST(subsurface_z_order)
 	color_rgb888(&green, 0, 255, 0);
 
 	client = create_client_and_test_surface(100, 50, 100, 100);
-	assert(client);
-	subco = get_subcompositor(client);
+	test_assert_ptr_not_null(client);
+	subco = client_get_subcompositor(client);
 
 	/* move the pointer clearly away from our screenshooting area */
 	weston_test_move_pointer(client->test->weston_test, 0, 1, 0, 2, 30);
@@ -287,7 +265,7 @@ TEST(subsurface_z_order)
 
 	fail += check_screen(client, "subsurface_z_order", 4, &clip, 4);
 
-	assert(fail == 0);
+	test_assert_int_eq(fail, 0);
 
 	for (i = 0; i < ARRAY_LENGTH(sub); i++)
 		if (sub[i])
@@ -303,6 +281,8 @@ TEST(subsurface_z_order)
 
 	wl_subcompositor_destroy(subco);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(subsurface_sync_damage_buffer)
@@ -324,8 +304,8 @@ TEST(subsurface_sync_damage_buffer)
 	color_rgb888(&green, 0, 255, 0);
 
 	client = create_client_and_test_surface(100, 50, 100, 100);
-	assert(client);
-	subco = get_subcompositor(client);
+	test_assert_ptr_not_null(client);
+	subco = client_get_subcompositor(client);
 
 	/* move the pointer clearly away from our screenshooting area */
 	weston_test_move_pointer(client->test->weston_test, 0, 1, 0, 2, 30);
@@ -354,7 +334,7 @@ TEST(subsurface_sync_damage_buffer)
 
 	fail += check_screen(client, "subsurface_sync_damage_buffer", 2, &clip, 2);
 
-	assert(fail == 0);
+	test_assert_int_eq(fail, 0);
 
 	for (i = 0; i < ARRAY_LENGTH(sub); i++)
 		if (sub[i])
@@ -370,6 +350,8 @@ TEST(subsurface_sync_damage_buffer)
 
 	wl_subcompositor_destroy(subco);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(subsurface_empty_mapping)
@@ -394,8 +376,8 @@ TEST(subsurface_empty_mapping)
 	color_rgb888(&green, 0, 255, 0);
 
 	client = create_client_and_test_surface(100, 50, 100, 100);
-	assert(client);
-	subco = get_subcompositor(client);
+	test_assert_ptr_not_null(client);
+	subco = client_get_subcompositor(client);
 	viewporter = bind_to_singleton_global(client,
 					      &wp_viewporter_interface, 1);
 
@@ -483,7 +465,7 @@ TEST(subsurface_empty_mapping)
 
 	fail += check_screen(client, "subsurface_empty_mapping", 1, &clip, 11);
 
-	assert(fail == 0);
+	test_assert_int_eq(fail, 0);
 
 	wp_viewport_destroy(viewport);
 
@@ -502,6 +484,8 @@ TEST(subsurface_empty_mapping)
 	wp_viewporter_destroy(viewporter);
 	wl_subcompositor_destroy(subco);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 TEST(subsurface_desync_commit)
@@ -520,8 +504,8 @@ TEST(subsurface_desync_commit)
 	color_rgb888(&green, 0, 255, 0);
 
 	client = create_client_and_test_surface(100, 50, 100, 100);
-	assert(client);
-	subco = get_subcompositor(client);
+	test_assert_ptr_not_null(client);
+	subco = client_get_subcompositor(client);
 
 	/* make the parent surface red */
 	surf[0] = client->surface->wl_surface;
@@ -553,4 +537,6 @@ TEST(subsurface_desync_commit)
 
 	wl_subcompositor_destroy(subco);
 	client_destroy(client);
+
+	return RESULT_OK;
 }

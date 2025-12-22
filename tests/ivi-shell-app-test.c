@@ -31,6 +31,7 @@
 #include "weston-test-client-helper.h"
 #include "ivi-application-client-protocol.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
 #include "test-config.h"
 
 static enum test_result_code
@@ -133,7 +134,13 @@ fixture_setup(struct weston_test_harness *harness)
 			 cfgln("workspace-id=%d", 3),
 			 cfgln("icon-id=%d", 4010),
 			 cfgln("icon=%s", WESTON_DATA_DIR "/icon_ivi_smoke.png"),
-			 cfgln("path=%s", BINDIR "/weston-smoke")
+			 cfgln("path=%s", BINDIR "/weston-smoke"),
+
+			 cfgln("[ivi-launcher]"),
+			 cfgln("workspace-id=%d", 3),
+			 cfgln("icon-id=%d", 4011),
+			 cfgln("icon=%s", WESTON_DATA_DIR "/icon_ivi_simple-egl-vertical.png"),
+			 cfgln("command=%s", BINDIR "/weston-simple-egl -v")
 			);
 
 	return weston_test_harness_execute_as_client(harness, &setup);
@@ -152,18 +159,19 @@ get_ivi_application(struct client *client)
 			continue;
 
 		if (global_iviapp)
-			assert(0 && "multiple ivi_application objects");
+			test_assert_not_reached("multiple ivi_application objects");
 
 		global_iviapp = g;
 	}
 
-	assert(global_iviapp && "no ivi_application found");
+	/* No ivi_application found. */
+	test_assert_ptr_not_null(global_iviapp);
 
-	assert(global_iviapp->version == 1);
+	test_assert_int_eq(global_iviapp->version, 1);
 
 	iviapp = wl_registry_bind(client->wl_registry, global_iviapp->name,
 				  &ivi_application_interface, 1);
-	assert(iviapp);
+	test_assert_ptr_not_null(iviapp);
 
 	return iviapp;
 }
@@ -181,4 +189,6 @@ TEST(ivi_application_exists)
 
 	ivi_application_destroy(iviapp);
 	client_destroy(client);
+
+	return RESULT_OK;
 }

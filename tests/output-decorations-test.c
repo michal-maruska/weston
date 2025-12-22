@@ -27,14 +27,31 @@
 
 #include "weston-test-client-helper.h"
 #include "weston-test-fixture-compositor.h"
+#include "weston-test-assert.h"
+
+struct setup_args {
+	struct fixture_metadata meta;
+	enum weston_renderer_type renderer;
+};
+
+static const struct setup_args my_setup_args[] = {
+	{
+		.meta.name = "GL",
+		.renderer = WESTON_RENDERER_GL,
+	},
+	{
+		.renderer = WESTON_RENDERER_VULKAN,
+		.meta.name = "Vulkan",
+	},
+};
 
 static enum test_result_code
-fixture_setup(struct weston_test_harness *harness)
+fixture_setup(struct weston_test_harness *harness, const struct setup_args *arg)
 {
 	struct compositor_setup setup;
 
 	compositor_setup_defaults(&setup);
-	setup.renderer = WESTON_RENDERER_GL;
+	setup.renderer = arg->renderer;
 	setup.width = 300;
 	setup.height = 150;
 	setup.shell = SHELL_TEST_DESKTOP;
@@ -45,7 +62,7 @@ fixture_setup(struct weston_test_harness *harness)
 
 	return weston_test_harness_execute_as_client(harness, &setup);
 }
-DECLARE_FIXTURE_SETUP(fixture_setup);
+DECLARE_FIXTURE_SETUP_WITH_ARG(fixture_setup, my_setup_args, meta);
 
 /*
  * Basic screenshot test for output decorations
@@ -65,20 +82,15 @@ DECLARE_FIXTURE_SETUP(fixture_setup);
 TEST(output_decorations)
 {
 	struct client *client;
-	struct buffer *shot;
-	pixman_image_t *img;
 	bool match;
 
 	client = create_client();
 
-	shot = client_capture_output(client, client->output,
-				     WESTON_CAPTURE_V1_SOURCE_FULL_FRAMEBUFFER);
-	img = image_convert_to_a8r8g8b8(shot->image);
+	match = verify_screen_content(client, "output-decorations", 0, NULL, 0,
+				      client->output->name, INCLUDE_DECORATIONS);
+	test_assert_true(match);
 
-	match = verify_image(img, "output-decorations", 0, NULL, 0);
-	assert(match);
-
-	pixman_image_unref(img);
-	buffer_destroy(shot);
 	client_destroy(client);
+
+	return RESULT_OK;
 }

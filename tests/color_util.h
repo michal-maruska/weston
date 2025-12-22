@@ -30,6 +30,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#include <libweston/linalg-types.h>
+
 enum color_chan_index {
 	COLOR_CHAN_R = 0,
 	COLOR_CHAN_G,
@@ -48,43 +50,17 @@ struct color_float {
 	float a;
 };
 
-/* column vector */
-struct lcmsVEC3 {
-	float n[3];
-};
-
-struct lcmsMAT3 {
-	/* array of columns */
-	struct lcmsVEC3 v[3];
-};
-
 enum transfer_fn {
 	TRANSFER_FN_IDENTITY,
-	TRANSFER_FN_SRGB_EOTF,
-	TRANSFER_FN_SRGB_EOTF_INVERSE,
+	TRANSFER_FN_SRGB,
+	TRANSFER_FN_SRGB_INVERSE,
 	TRANSFER_FN_ADOBE_RGB_EOTF,
 	TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE,
+	TRANSFER_FN_POWER2_2_EOTF,
+	TRANSFER_FN_POWER2_2_EOTF_INVERSE,
 	TRANSFER_FN_POWER2_4_EOTF,
 	TRANSFER_FN_POWER2_4_EOTF_INVERSE,
 };
-
-/*
- * A helper to lay out a matrix in the natural writing order in code
- * instead of needing to transpose in your mind every time you read it.
- * The matrix is laid out as written:
- *     ⎡ a11 a12 a13 ⎤
- *     ⎢ a21 a22 a23 ⎥
- *     ⎣ a31 a32 a33 ⎦
- * where the first digit is row and the second digit is column.
- */
-#define LCMSMAT3(a11, a12, a13,						\
-		 a21, a22, a23,						\
-		 a31, a32, a33) ((struct lcmsMAT3)			\
-	{ /* Each vector is a column => looks like a transpose */	\
-		.v[0] = { .n = { a11, a21, a31} },			\
-		.v[1] = { .n = { a12, a22, a32} },			\
-		.v[2] = { .n = { a13, a23, a33} },			\
-	})
 
 void
 sRGB_linearize(struct color_float *cf);
@@ -95,7 +71,7 @@ sRGB_delinearize(struct color_float *cf);
 struct color_float
 a8r8g8b8_to_float(uint32_t v);
 
-bool
+void
 find_tone_curve_type(enum transfer_fn fn, int *type, double params[5]);
 
 float
@@ -106,7 +82,7 @@ should_include_vcgt(const double vcgt_exponents[COLOR_CHAN_NUM]);
 
 void
 process_pixel_using_pipeline(enum transfer_fn pre_curve,
-			     const struct lcmsMAT3 *mat,
+			     struct weston_mat3f mat,
 			     enum transfer_fn post_curve,
 			     const double vcgt_exponents[COLOR_CHAN_NUM],
 			     const struct color_float *in,
@@ -119,16 +95,13 @@ struct color_float
 color_float_apply_curve(enum transfer_fn fn, struct color_float c);
 
 struct color_float
-color_float_apply_matrix(const struct lcmsMAT3 *mat, struct color_float c);
+color_float_apply_matrix(struct weston_mat3f mat, struct color_float c);
 
 enum transfer_fn
 transfer_fn_invert(enum transfer_fn fn);
 
 const char *
 transfer_fn_name(enum transfer_fn fn);
-
-void
-lcmsMAT3_invert(struct lcmsMAT3 *result, const struct lcmsMAT3 *mat);
 
 /** Scalar statistics
  *

@@ -18,11 +18,11 @@ runs without any underlying windowing system. The backend uses the
 Linux KMS API to detect connected monitors. Monitor hot-plugging is
 supported. Input devices are found automatically by
 .BR udev (7).
-Compositing happens mainly in GL\ ES\ 2, initialized through EGL. It
+Compositing happens mainly in GL\ ES\ 2, initialized through EGL, or Vulkan. It
 is also possible to take advantage of hardware cursors and overlays,
 when they exist and are functional. Full-screen surfaces will be
 scanned out directly without compositing, when possible.
-Hardware accelerated clients are supported via EGL.
+Hardware accelerated clients are supported via EGL or Vulkan.
 
 The backend chooses the DRM graphics device first based on seat id.
 If seat identifiers are not set, it looks for the graphics device
@@ -57,7 +57,7 @@ The actually supported pixel formats depend on the DRM driver and hardware,
 and the renderer used. Using Pixman-renderer, DRM-backend supports
 .BR xrgb8888 ", " xrgb2101010 ", " rgb565
 and some of their permutations.
-The formats supported with GL-renderer depend on the EGL and OpenGL ES 2 or 3
+The formats supported with GL-renderer or vulkan-renderer depend on the driver
 implementations. The names are case-insensitive. This setting applies only to
 .RB "outputs in SDR mode, see " eotf-mode " in " weston.ini (5).
 If the hardware platform supports hardware planes placed under the DRM primary plane
@@ -71,6 +71,16 @@ would be needed for Weston to display content lifted into such hardware planes.
 sets Weston's pageflip timeout in milliseconds.  This sets a timer to exit
 gracefully with a log message and an exit code of 1 in case the DRM driver is
 non-responsive.  Setting it to 0 disables this feature.
+.TP
+\fBoffload-blend-to-output\fR=\fItrue\fR
+Allow backend to offload the blend-to-output color transformation (whenever
+possible) instead of performing this transformation in the renderer. Only the
+DRM-backend is capable of doing that at the moment. Requires color management
+enabled. Boolean, defaults to
+.BR false .
+
+.I CAVEAT:
+This may result in loss of color precision and may cause color banding.
 
 .SS Section output
 .TP

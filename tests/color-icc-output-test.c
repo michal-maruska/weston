@@ -27,8 +27,10 @@
 #include "config.h"
 
 #include <lcms2.h>
+#include <libweston/linalg-3.h>
 
 #include "weston-test-client-helper.h"
+#include "weston-test-assert.h"
 #include "image-iter.h"
 #include "lcms_util.h"
 
@@ -55,11 +57,9 @@ const struct lcms_pipeline pipeline_sRGB = {
 		.Green = { 0.300, 0.600, 1.0 },
 		.Blue =  { 0.150, 0.060, 1.0 }
 	},
-	.pre_fn = TRANSFER_FN_SRGB_EOTF,
-	.mat = LCMSMAT3(1.0, 0.0, 0.0,
-			0.0, 1.0, 0.0,
-			0.0, 0.0, 1.0),
-	.post_fn = TRANSFER_FN_SRGB_EOTF_INVERSE
+	.pre_fn = TRANSFER_FN_POWER2_2_EOTF,
+	.mat = WESTON_MAT3F_IDENTITY,
+	.post_fn = TRANSFER_FN_POWER2_2_EOTF_INVERSE
 };
 
 const struct lcms_pipeline pipeline_adobeRGB = {
@@ -69,8 +69,9 @@ const struct lcms_pipeline pipeline_adobeRGB = {
 		.Green = { 0.210, 0.710, 1.0 },
 		.Blue =  { 0.150, 0.060, 1.0 }
 	},
-	.pre_fn = TRANSFER_FN_SRGB_EOTF,
-	.mat = LCMSMAT3( 0.715127, 0.284868, 0.000005,
+	.pre_fn = TRANSFER_FN_POWER2_2_EOTF,
+	.mat = WESTON_MAT3F(
+			 0.715127, 0.284868, 0.000005,
 			 0.000001, 0.999995, 0.000004,
 			-0.000003, 0.041155, 0.958848),
 	.post_fn = TRANSFER_FN_ADOBE_RGB_EOTF_INVERSE
@@ -83,8 +84,9 @@ const struct lcms_pipeline pipeline_BT2020 = {
 		.Green = { 0.170, 0.797, 1.0 },
 		.Blue =  { 0.131, 0.046, 1.0 }
 	},
-	.pre_fn = TRANSFER_FN_SRGB_EOTF,
-	.mat = LCMSMAT3(0.627402, 0.329292, 0.043306,
+	.pre_fn = TRANSFER_FN_POWER2_2_EOTF,
+	.mat = WESTON_MAT3F(
+			0.627402, 0.329292, 0.043306,
 			0.069095, 0.919544, 0.011360,
 			0.016394, 0.088028, 0.895578),
 	/* this is equivalent to BT.1886 with zero black level */
@@ -98,17 +100,19 @@ struct setup_args {
 
 	/**
 	 * Two-norm color error tolerance in units of 1.0/255, computed in
-	 * output electrical space.
+	 * output electrical space, of the average error in the whole strip.
+	 */
+	float avg_tol;
+
+	/**
+	 * Two-norm color error tolerance in units of 1.0/255, computed in
+	 * output electrical space, of the maximum error in the whole strip.
 	 *
 	 * Tolerance depends more on the 1D LUT used for the
 	 * inv EOTF than the tested 3D LUT size:
 	 * 9x9x9, 17x17x17, 33x33x33, 127x127x127
-	 *
-	 * TODO: when we add power-law in the curve enumeration
-	 * in GL-renderer, then we should fix the tolerance
-	 * as the error should reduce a lot.
 	 */
-	float tolerance;
+	float max_tol;
 
 	/**
 	 * 3DLUT dimension size
@@ -127,16 +131,95 @@ struct setup_args {
 };
 
 static const struct setup_args my_setup_args[] = {
-	/* name,                    ref img, pipeline,     tolerance, dim, profile type, clut tolerance, vcgt_exponents */
-	{ { "sRGB->sRGB MAT" },           0, &pipeline_sRGB,     0.0,  0, PTYPE_MATRIX_SHAPER },
-	{ { "sRGB->sRGB MAT VCGT" },      3, &pipeline_sRGB,     0.8,  0, PTYPE_MATRIX_SHAPER, 0.0000,   {1.1, 1.2, 1.3} },
-	{ { "sRGB->adobeRGB MAT" },       1, &pipeline_adobeRGB, 1.6,  0, PTYPE_MATRIX_SHAPER },
-	{ { "sRGB->adobeRGB MAT VCGT" },  4, &pipeline_adobeRGB, 1.0,  0, PTYPE_MATRIX_SHAPER, 0.0000,   {1.1, 1.2, 1.3} },
-	{ { "sRGB->BT2020 MAT" },         2, &pipeline_BT2020,   1.1,  0, PTYPE_MATRIX_SHAPER },
-	{ { "sRGB->sRGB CLUT" },          0, &pipeline_sRGB,     0.0, 17, PTYPE_CLUT,          0.0005 },
-	{ { "sRGB->sRGB CLUT VCGT" },     3, &pipeline_sRGB,     0.9, 17, PTYPE_CLUT,          0.0005,   {1.1, 1.2, 1.3} },
-	{ { "sRGB->adobeRGB CLUT" },      1, &pipeline_adobeRGB, 1.8, 17, PTYPE_CLUT,          0.0065 },
-	{ { "sRGB->adobeRGB CLUT VCGT" }, 4, &pipeline_adobeRGB, 1.1, 17, PTYPE_CLUT,          0.0065,   {1.1, 1.2, 1.3} },
+	{
+		.meta = { "sRGB->sRGB MAT" },
+		.ref_image_index = 0,
+		.pipeline = &pipeline_sRGB,
+		.avg_tol = 0.0,
+		.max_tol = 0.0,
+		.dim_size = 0,
+		.type = PTYPE_MATRIX_SHAPER,
+	},
+	{
+		.meta = { "sRGB->sRGB MAT VCGT" },
+		.ref_image_index = 3,
+		.pipeline = &pipeline_sRGB,
+		.avg_tol = 0.34,
+		.max_tol = 1,
+		.dim_size = 0,
+		.type = PTYPE_MATRIX_SHAPER,
+		.vcgt_exponents = { 1.1, 1.2, 1.3 },
+	},
+	{
+		.meta = { "sRGB->adobeRGB MAT" },
+		.ref_image_index = 1,
+		.pipeline = &pipeline_adobeRGB,
+		.avg_tol = 0.46,
+		.max_tol = 2,
+		.dim_size = 0,
+		.type = PTYPE_MATRIX_SHAPER,
+	},
+	{
+		.meta = { "sRGB->adobeRGB MAT VCGT" },
+		.ref_image_index = 4,
+		.pipeline = &pipeline_adobeRGB,
+		.avg_tol = 0.46,
+		.max_tol = 1,
+		.dim_size = 0,
+		.type = PTYPE_MATRIX_SHAPER,
+		.vcgt_exponents = { 1.1, 1.2, 1.3 },
+	},
+	{
+		.meta = { "sRGB->BT2020 MAT" },
+		.ref_image_index = 2,
+		.pipeline = &pipeline_BT2020,
+		.avg_tol = 0.48,
+		.max_tol = 2,
+		.dim_size = 0,
+		.type = PTYPE_MATRIX_SHAPER,
+	},
+	{
+		.meta = { "sRGB->sRGB CLUT" },
+		.ref_image_index = 0,
+		.pipeline = &pipeline_sRGB,
+		.avg_tol = 1.06,
+		.max_tol = 2,
+		.dim_size = 17,
+		.type = PTYPE_CLUT,
+		.clut_roundtrip_tolerance = 0.01,
+	},
+	{
+		.meta = { "sRGB->sRGB CLUT VCGT" },
+		.ref_image_index = 3,
+		.pipeline = &pipeline_sRGB,
+		.avg_tol = 0.72,
+		.max_tol = 2,
+		.dim_size = 17,
+		.type = PTYPE_CLUT,
+		.clut_roundtrip_tolerance = 0.01,
+		.vcgt_exponents = { 1.1, 1.2, 1.3 },
+	},
+	{
+		.meta = { "sRGB->adobeRGB CLUT" },
+		.ref_image_index = 1,
+		.pipeline = &pipeline_adobeRGB,
+		.avg_tol = 0.51,
+		.max_tol = 2,
+		.dim_size = 17,
+		.type = PTYPE_CLUT,
+		.clut_roundtrip_tolerance = 0.0065,
+	},
+	{
+		.meta = { "sRGB->adobeRGB CLUT VCGT" },
+		.ref_image_index = 4,
+		.pipeline = &pipeline_adobeRGB,
+		.avg_tol = 0.52,
+		.max_tol = 2,
+		.dim_size = 17,
+		.type = PTYPE_CLUT,
+		.clut_roundtrip_tolerance = 0.0065,
+		.vcgt_exponents = { 1.1, 1.2, 1.3 },
+	},
 };
 
 /*
@@ -197,10 +280,10 @@ build_output_icc_profile(const struct setup_args *arg, const char *filename)
 	bool saved;
 
 	profile = build_lcms_profile_output(arg);
-	assert(profile);
+	test_assert_ptr_not_null(profile);
 
 	saved = cmsSaveProfileToFile(profile, filename);
-	assert(saved);
+	test_assert_true(saved);
 
 	cmsCloseProfile(profile);
 }
@@ -338,11 +421,13 @@ process_pipeline_comparison(const struct buffer *src_buf,
 	struct color_float pix_src_pipeline;
 	struct color_float pix_shot;
 	struct rgb_diff_stat diffstat = { .dump = dump };
+	float avg_err;
+	float max_err;
 	bool ok;
 
 	/* no point to compare different images */
-	assert(ih_src.width == ih_shot.width);
-	assert(ih_src.height == ih_shot.height);
+	test_assert_int_eq(ih_src.width, ih_shot.width);
+	test_assert_int_eq(ih_src.height, ih_shot.height);
 
 	for (y = 0; y < ih_src.height; y++) {
 		uint32_t *row_ptr = image_header_get_row_u32(&ih_src, y);
@@ -353,7 +438,7 @@ process_pipeline_comparison(const struct buffer *src_buf,
 			pix_shot = a8r8g8b8_to_float(row_ptr_shot[x]);
 
 			process_pixel_using_pipeline(arg->pipeline->pre_fn,
-						     &arg->pipeline->mat,
+						     arg->pipeline->mat,
 						     arg->pipeline->post_fn,
 						     arg->vcgt_exponents,
 						     &pix_src, &pix_src_pipeline);
@@ -364,12 +449,13 @@ process_pipeline_comparison(const struct buffer *src_buf,
 		}
 	}
 
-	ok = diffstat.two_norm.max <= arg->tolerance / 255.0f;
+	avg_err = diffstat.two_norm.sum / diffstat.two_norm.count * 255.0f;
+	max_err = diffstat.two_norm.max * 255.0f;
+	ok = max_err <= arg->max_tol && avg_err <= arg->avg_tol;
 
-	testlog("%s %s %s tolerance %f %s\n", __func__,
-		ok ? "SUCCESS" : "FAILURE",
-		arg->meta.name, arg->tolerance,
-		arg->type == PTYPE_MATRIX_SHAPER ? "matrix-shaper" : "cLUT");
+	testlog("%s %s %s tolerances avg: %.2f <= %.2f, max: %.2f <= %.2f\n",
+		__func__, ok ? "SUCCESS" : "FAILURE", arg->meta.name,
+		avg_err, arg->avg_tol, max_err, arg->max_tol);
 
 	rgb_diff_stat_print(&diffstat, __func__, 8);
 
@@ -406,7 +492,7 @@ TEST(opaque_pixel_conversion)
 	bool match;
 
 	client = create_client_and_test_surface(0, 0, width, height);
-	assert(client);
+	test_assert_ptr_not_null(client);
 	surface = client->surface->wl_surface;
 
 	buf = create_shm_buffer_a8r8g8b8(client, width, height);
@@ -416,16 +502,18 @@ TEST(opaque_pixel_conversion)
 	wl_surface_damage(surface, 0, 0, width, height);
 	wl_surface_commit(surface);
 
-	shot = capture_screenshot_of_output(client, NULL);
-	assert(shot);
+	shot = capture_screenshot_of_output(client, NULL, NO_DECORATIONS);
+	test_assert_ptr_not_null(shot);
 
 	match = verify_image(shot->image, "shaper_matrix", arg->ref_image_index,
 			     NULL, seq_no);
-	assert(process_pipeline_comparison(buf, shot, arg));
-	assert(match);
+	test_assert_true(process_pipeline_comparison(buf, shot, arg));
+	test_assert_true(match);
 	buffer_destroy(shot);
 	buffer_destroy(buf);
 	client_destroy(client);
+
+	return RESULT_OK;
 }
 
 static struct color_float
@@ -436,7 +524,7 @@ convert_to_blending_space(const struct lcms_pipeline *pip,
 	 * or simply output space without the non-linear encoding
 	 */
 	cf = color_float_apply_curve(pip->pre_fn, cf);
-	return color_float_apply_matrix(&pip->mat, cf);
+	return color_float_apply_matrix(pip->mat, cf);
 }
 
 static void
@@ -451,7 +539,7 @@ compare_blend(const struct lcms_pipeline *pip,
 	unsigned i;
 
 	/* convert sources to straight alpha */
-	assert(bg.a == 1.0f);
+	test_assert_f32_eq(bg.a, 1.0f);
 	fg = color_float_unpremult(fg);
 
 	bg = convert_to_blending_space(pip, bg);
@@ -476,12 +564,12 @@ static const int ALPHA_STEPS = 256;
 static const int BLOCK_WIDTH = 1;
 
 static void *
-get_middle_row(struct buffer *buf)
+get_middle_row(pixman_image_t *image)
 {
-	struct image_header ih = image_header_from(buf->image);
+	struct image_header ih = image_header_from(image);
 
-	assert(ih.width >= BLOCK_WIDTH * ALPHA_STEPS);
-	assert(ih.height >= BLOCK_WIDTH);
+	test_assert_int_ge(ih.width, BLOCK_WIDTH * ALPHA_STEPS);
+	test_assert_int_ge(ih.height, BLOCK_WIDTH);
 
 	return image_header_get_row_u32(&ih, (BLOCK_WIDTH - 1) / 2);
 }
@@ -503,9 +591,9 @@ check_blend_pattern(struct buffer *bg_buf,
 	dump = fopen_dump_file(arg->meta.name);
 #endif
 
-	uint32_t *bg_row = get_middle_row(bg_buf);
-	uint32_t *fg_row = get_middle_row(fg_buf);
-	uint32_t *shot_row = get_middle_row(shot_buf);
+	uint32_t *bg_row = get_middle_row(bg_buf->image);
+	uint32_t *fg_row = get_middle_row(fg_buf->image);
+	uint32_t *shot_row = get_middle_row(shot_buf->image);
 	struct rgb_diff_stat diffstat = { .dump = dump };
 	int x;
 
@@ -523,7 +611,7 @@ check_blend_pattern(struct buffer *bg_buf,
 		fclose(dump);
 
 	/* Test success condition: */
-	return diffstat.two_norm.max < 1.5f / 255.0f;
+	return diffstat.two_norm.max < 1.72f / 255.0f;
 }
 
 static uint32_t
@@ -545,8 +633,8 @@ fill_alpha_pattern(struct buffer *buf)
 	struct image_header ih = image_header_from(buf->image);
 	int y;
 
-	assert(ih.pixman_format == PIXMAN_a8r8g8b8);
-	assert(ih.width == BLOCK_WIDTH * ALPHA_STEPS);
+	test_assert_enum(ih.pixman_format, PIXMAN_a8r8g8b8);
+	test_assert_int_eq(ih.width, BLOCK_WIDTH * ALPHA_STEPS);
 
 	for (y = 0; y < ih.height; y++) {
 		uint32_t *row = image_header_get_row_u32(&ih, y);
@@ -611,8 +699,7 @@ TEST(output_icc_alpha_blend)
 	subco = bind_to_singleton_global(client, &wl_subcompositor_interface, 1);
 
 	/* background window content */
-	bg = create_shm_buffer_a8r8g8b8(client, width, height);
-	fill_image_with_color(bg->image, &background_color);
+	bg = create_shm_buffer_solid(client, width, height, &background_color);
 
 	/* background window, main surface */
 	client->surface = create_test_surface(client);
@@ -637,12 +724,12 @@ TEST(output_icc_alpha_blend)
 	/* attach, damage, commit background window */
 	move_client(client, 0, 0);
 
-	shot = capture_screenshot_of_output(client, NULL);
-	assert(shot);
+	shot = capture_screenshot_of_output(client, NULL, NO_DECORATIONS);
+	test_assert_ptr_not_null(shot);
 	match = verify_image(shot->image, "output_icc_alpha_blend", arg->ref_image_index,
 			     NULL, seq_no);
-	assert(check_blend_pattern(bg, fg, shot, arg));
-	assert(match);
+	test_assert_true(check_blend_pattern(bg, fg, shot, arg));
+	test_assert_true(match);
 
 	buffer_destroy(shot);
 
@@ -651,6 +738,8 @@ TEST(output_icc_alpha_blend)
 	buffer_destroy(fg);
 	wl_subcompositor_destroy(subco);
 	client_destroy(client); /* destroys bg */
+
+	return RESULT_OK;
 }
 
 /*
@@ -670,21 +759,16 @@ TEST(output_icc_decorations)
 	int seq_no = get_test_fixture_index();
 	const struct setup_args *arg = &my_setup_args[seq_no];
 	struct client *client;
-	struct buffer *shot;
-	pixman_image_t *img;
 	bool match;
 
 	client = create_client();
 
-	shot = client_capture_output(client, client->output,
-				     WESTON_CAPTURE_V1_SOURCE_FULL_FRAMEBUFFER);
-	img = image_convert_to_a8r8g8b8(shot->image);
+	match = verify_screen_content(client, "output-icc-decorations",
+				      arg->ref_image_index, NULL, seq_no,
+				      client->output->name, INCLUDE_DECORATIONS);
+	test_assert_true(match);
 
-	match = verify_image(img, "output-icc-decorations",
-			     arg->ref_image_index, NULL, seq_no);
-	assert(match);
-
-	pixman_image_unref(img);
-	buffer_destroy(shot);
 	client_destroy(client);
+
+	return RESULT_OK;
 }

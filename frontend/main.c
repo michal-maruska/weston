@@ -1,7 +1,7 @@
 /*
  * Copyright © 2010-2011 Intel Corporation
  * Copyright © 2008-2011 Kristian Høgsberg
- * Copyright © 2012-2018,2022 Collabora, Ltd.
+ * Copyright © 2012-2018,2022-2025 Collabora, Ltd.
  * Copyright © 2010-2011 Benjamin Franzke
  * Copyright © 2013 Jason Ekstrand
  * Copyright © 2017, 2018 General Electric Company
@@ -45,6 +45,7 @@
 #include <libevdev/libevdev.h>
 #include <linux/input.h>
 #include <sys/time.h>
+#include <libdisplay-info/info.h>
 #include <linux/limits.h>
 
 #include "weston.h"
@@ -54,6 +55,7 @@
 #include "shared/process-util.h"
 #include "shared/string-helpers.h"
 #include "shared/xalloc.h"
+#include "shared/weston-assert.h"
 #include "git-version.h"
 #include <libweston/version.h>
 #include "weston.h"
@@ -70,11 +72,12 @@
 #include <libweston/weston-log.h>
 #include <libweston/remoting-plugin.h>
 #include <libweston/pipewire-plugin.h>
+#include <libweston/color.h>
 
 #define WINDOW_TITLE "Weston Compositor"
 /* flight recorder size (in bytes) */
 #define DEFAULT_FLIGHT_REC_SIZE (5 * 1024 * 1024)
-#define DEFAULT_FLIGHT_REC_SCOPES "log,drm-backend"
+#define DEFAULT_FLIGHT_REC_SCOPES "log"
 
 struct wet_output_config {
 	int width;
@@ -711,6 +714,9 @@ usage(int error_code)
 #if defined(ENABLE_EGL)
 			"\t\t\t\tgl\tOpenGL ES\n"
 #endif
+#if defined(ENABLE_VULKAN)
+			"\t\t\t\tvulkan\tVulkan\n"
+#endif
 			"\t\t\t\tnoop\tNo-op renderer for testing only\n"
 			"\t\t\t\tpixman\tPixman software renderer\n"
 		"  --shell=NAME\tShell to load, defaults to desktop\n"
@@ -718,6 +724,7 @@ usage(int error_code)
 		"  -i, --idle-time=SECS\tIdle time in seconds\n"
 #if defined(BUILD_XWAYLAND)
 		"  --xwayland\t\tLoad the xwayland module\n"
+		"  --no-xwm-decorations\tDisable Xwayland window decor\n"
 #endif
 		"  --modules\t\tLoad the comma-separated list of modules\n"
 		"  --log=FILE\t\tLog to the given file\n"
@@ -725,6 +732,12 @@ usage(int error_code)
 		"  --no-config\t\tDo not read weston.ini\n"
 		"  --wait-for-debugger\tRaise SIGSTOP on start-up\n"
 		"  --debug\t\tEnable debug extension\n"
+		"  -d, --debug-scopes=SCOPE\n\t\t\tSpecify which scopes to "
+			"be advertised to clients when using the weston-debug protocol."
+			"\n\t\t\tCan specify multiple scopes, "
+			"each followed by comma. \n\t\t\tBy default, --debug would "
+			"advertise all scopes created by libweston or by "
+			"other Weston frontends.\n"
 		"  -l, --logger-scopes=SCOPE\n\t\t\tSpecify log scopes to "
 			"subscribe to.\n\t\t\tCan specify multiple scopes, "
 			"each followed by comma\n"
@@ -755,8 +768,10 @@ usage(int error_code)
 		"\tflipped-rotate-270\n"
 		"  --use-pixman\t\tUse the pixman (CPU) renderer (deprecated alias for --renderer=pixman)\n"
 		"  --use-gl\t\tUse the GL renderer (deprecated alias for --renderer=gl)\n"
+		"  --use-vulkan\t\tUse the Vulkan renderer (deprecated alias for --renderer=vulkan)\n"
 		"  --no-outputs\t\tDo not create any virtual outputs\n"
 		"  --refresh-rate=RATE\tThe output refresh rate (in mHz)\n"
+		"  --fake-seat\t\tUse a fake seat for compatibility\n"
 		"\n");
 #endif
 
@@ -821,6 +836,12 @@ usage(int error_code)
 		"  --no-input\t\tDont create input devices\n\n");
 #endif
 
+#if defined(BUILD_LUA_SHELL)
+	fprintf(out,
+		"Options for lua-shell:\n\n"
+		"  --lua-script=script\t\tLua script\n\n");
+#endif
+
 	exit(error_code);
 }
 
@@ -865,6 +886,7 @@ static const struct {
 	{ WESTON_CAP_VIEW_CLIP_MASK, "view mask clipping" },
 	{ WESTON_CAP_EXPLICIT_SYNC, "explicit sync" },
 	{ WESTON_CAP_COLOR_OPS, "color operations" },
+	{ WESTON_CAP_COLOR_REP, "color representation" }
 };
 
 static void
@@ -939,6 +961,9 @@ weston_create_listening_socket(struct wl_display *display, const char *socket_na
 
 	if (socket_name) {
 		if (wl_display_add_socket(display, socket_name)) {
+			if (socket_name[0] != '/')
+				verify_xdg_runtime_dir();
+
 			weston_log("fatal: failed to add socket: %s\n",
 				   strerror(errno));
 			return -1;
@@ -1129,10 +1154,7 @@ out:
 	return ret;
 }
 
-static const struct {
-	const char *name;
-	enum require_outputs mode;
-} require_outputs_modes [] = {
+static const struct weston_enum_map require_outputs_modes [] = {
 	{ "all-found",	REQUIRE_OUTPUTS_ALL_FOUND },
 	{ "any",	REQUIRE_OUTPUTS_ANY },
 	{ "none",	REQUIRE_OUTPUTS_NONE },
@@ -1141,13 +1163,13 @@ static const struct {
 static int
 weston_parse_require_outputs(const char *name, enum require_outputs *mode)
 {
-	unsigned int i;
+	const struct weston_enum_map *entry;
 
-	for (i = 0; i < ARRAY_LENGTH(require_outputs_modes); i++)
-		if (strcmp(require_outputs_modes[i].name, name) == 0) {
-			*mode = require_outputs_modes[i].mode;
-			return 0;
-		}
+	entry = weston_enum_map_find_name(require_outputs_modes, name);
+	if (entry) {
+		*mode = entry->value;
+		return 0;
+	}
 
 	return -1;
 }
@@ -1162,6 +1184,7 @@ weston_compositor_init_config(struct weston_compositor *ec,
 	int repaint_msec;
 	bool color_management;
 	bool cal;
+	bool disable_input = false;
 
 	/* weston.ini [keyboard] */
 	s = weston_config_get_section(config, "keyboard", NULL, NULL);
@@ -1191,7 +1214,7 @@ weston_compositor_init_config(struct weston_compositor *ec,
 	s = weston_config_get_section(config, "core", NULL, NULL);
 	weston_config_section_get_int(s, "repaint-window", &repaint_msec,
 				      ec->repaint_msec);
-	if (repaint_msec < -10 || repaint_msec > 1000) {
+	if (repaint_msec < 1 || repaint_msec > 1000) {
 		weston_log("Invalid repaint_window value in config: %d\n",
 			   repaint_msec);
 	} else {
@@ -1199,6 +1222,9 @@ weston_compositor_init_config(struct weston_compositor *ec,
 	}
 	weston_log("Output repaint window is %d ms maximum.\n",
 		   ec->repaint_msec);
+
+	weston_config_section_get_uint(s, "placeholder-color",
+				       &ec->placeholder_color, 0x660000);
 
 	weston_config_section_get_bool(s, "color-management",
 				       &color_management, false);
@@ -1215,6 +1241,8 @@ weston_compositor_init_config(struct weston_compositor *ec,
 	if (cal)
 		weston_compositor_enable_touch_calibrator(ec,
 						save_touch_device_calibration);
+	weston_config_section_get_bool(s, "disable-input", &disable_input, false);
+	compositor->compositor->disable_input = disable_input;
 
 	return 0;
 }
@@ -1232,44 +1260,6 @@ weston_choose_default_backend(void)
 		backend = strdup(WESTON_NATIVE_BACKEND);
 
 	return backend;
-}
-
-static const struct { const char *name; uint32_t token; } transforms[] = {
-	{ "normal",             WL_OUTPUT_TRANSFORM_NORMAL },
-	{ "rotate-90",          WL_OUTPUT_TRANSFORM_90 },
-	{ "rotate-180",         WL_OUTPUT_TRANSFORM_180 },
-	{ "rotate-270",         WL_OUTPUT_TRANSFORM_270 },
-	{ "flipped",            WL_OUTPUT_TRANSFORM_FLIPPED },
-	{ "flipped-rotate-90",  WL_OUTPUT_TRANSFORM_FLIPPED_90 },
-	{ "flipped-rotate-180", WL_OUTPUT_TRANSFORM_FLIPPED_180 },
-	{ "flipped-rotate-270", WL_OUTPUT_TRANSFORM_FLIPPED_270 },
-};
-
-WL_EXPORT int
-weston_parse_transform(const char *transform, uint32_t *out)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_LENGTH(transforms); i++)
-		if (strcmp(transforms[i].name, transform) == 0) {
-			*out = transforms[i].token;
-			return 0;
-		}
-
-	*out = WL_OUTPUT_TRANSFORM_NORMAL;
-	return -1;
-}
-
-WL_EXPORT const char *
-weston_transform_to_string(uint32_t output_transform)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_LENGTH(transforms); i++)
-		if (transforms[i].token == output_transform)
-			return transforms[i].name;
-
-	return "<illegal value>";
 }
 
 static int
@@ -1361,27 +1351,765 @@ wet_output_set_transform(struct weston_output *output,
 	return 0;
 }
 
+static void
+weston_log_indent_multiline(int indent, const char *multiline)
+{
+	const char *delim = multiline;
+
+	while (*delim) {
+		delim = strchrnul(multiline, '\n');
+		weston_log_continue(STAMP_SPACE "%*s%.*s\n",
+				    indent, "", (int)(delim - multiline), multiline);
+		multiline = delim + 1;
+	}
+}
+
+static bool
+parse_float_array(float *values, size_t len_values, const char *str, char **errmsg)
+{
+	struct weston_string_array elems;
+	size_t i;
+
+	elems = weston_parse_space_separated_list(str);
+	if (elems.len != len_values) {
+		if (len_values == 1) {
+			str_printf(errmsg, "Needed only one number, got %zu numbers.",
+				   elems.len);
+		} else {
+			str_printf(errmsg,
+				   "Needed exactly %zu numbers separated by whitespace, got %zu.",
+				   len_values, elems.len);
+		}
+		weston_string_array_fini(&elems);
+		return false;
+	}
+
+	for (i = 0; i < len_values; i++) {
+		if (!safe_strtofloat(elems.array[i], &values[i])) {
+			str_printf(errmsg, "'%s' is not a number.", elems.array[i]);
+			weston_string_array_fini(&elems);
+			return false;
+		}
+	}
+
+	weston_string_array_fini(&elems);
+	return true;
+}
+
+static bool
+parse_CIExy(struct weston_CIExy *chrom, const char *str, char **errmsg)
+{
+	float val[2];
+
+	if (!parse_float_array(val, ARRAY_LENGTH(val), str, errmsg))
+		return false;
+
+	chrom->x = val[0];
+	chrom->y = val[1];
+
+	return true;
+}
+
+static const struct weston_enum_map config_primaries_map[] = {
+	{ "srgb",         WESTON_PRIMARIES_CICP_SRGB },
+	{ "pal_m",        WESTON_PRIMARIES_CICP_PAL_M },
+	{ "pal",          WESTON_PRIMARIES_CICP_PAL },
+	{ "ntsc",         WESTON_PRIMARIES_CICP_NTSC },
+	{ "generic_film", WESTON_PRIMARIES_CICP_GENERIC_FILM },
+	{ "bt2020",       WESTON_PRIMARIES_CICP_BT2020 },
+	{ "cie1931_xyz",  WESTON_PRIMARIES_CICP_CIE1931_XYZ },
+	{ "dci_p3",       WESTON_PRIMARIES_CICP_DCI_P3 },
+	{ "display_p3",   WESTON_PRIMARIES_CICP_DISPLAY_P3 },
+	{ "adobe_rgb",    WESTON_PRIMARIES_ADOBE_RGB },
+};
+
+static const struct weston_enum_map config_tf_map[] = {
+	{ "bt1886",  WESTON_TF_BT1886 },
+	{ "gamma22", WESTON_TF_GAMMA22 },
+	{ "gamma28", WESTON_TF_GAMMA28 },
+	{ "st240",   WESTON_TF_ST240 },
+	{ "st428",   WESTON_TF_ST428 },
+	{ "st2084",  WESTON_TF_ST2084_PQ },
+	{ "linear",  WESTON_TF_EXT_LINEAR },
+	{ "log100",  WESTON_TF_LOG_100 },
+	{ "log316",  WESTON_TF_LOG_316 },
+	{ "xvycc",   WESTON_TF_XVYCC },
+	{ "hlg",     WESTON_TF_HLG },
+};
+
+enum profile_parameter_group {
+	PARAMS_GROUP_PRIMARIES              = 1 << 0,
+	PARAMS_GROUP_PRIMARIES_NAMED        = 1 << 1,
+	PARAMS_GROUP_TF_NAMED               = 1 << 2,
+	PARAMS_GROUP_TF_POWER               = 1 << 3,
+	PARAMS_GROUP_LUMINANCE              = 1 << 4,
+	PARAMS_GROUP_TARGET_PRIMARIES       = 1 << 5,
+	PARAMS_GROUP_TARGET_PRIMARIES_NAMED = 1 << 6,
+	PARAMS_GROUP_TARGET_LUMINANCE       = 1 << 7,
+	PARAMS_GROUP_MAX_FALL               = 1 << 8,
+	PARAMS_GROUP_MAX_CLL                = 1 << 9,
+};
+
+static const struct weston_enum_map profile_parameter_group_names[] = {
+	{ "signaling primaries", PARAMS_GROUP_PRIMARIES },
+	{ "signaling luminances", PARAMS_GROUP_LUMINANCE },
+	{ "target primaries", PARAMS_GROUP_TARGET_PRIMARIES },
+	{ "target luminances", PARAMS_GROUP_TARGET_LUMINANCE },
+};
+
+struct config_color_params_type {
+	enum {
+		TYPE_FLOAT,
+		TYPE_CIEXY,
+		TYPE_ENUM,
+	} data_type;
+	const struct weston_enum_map *map;
+	size_t map_len;
+};
+
+/* A scalar floating-point value (float) */
+static const struct config_color_params_type type_float = {
+	TYPE_FLOAT, NULL, 0,
+};
+
+/* A CIE 1931 xy floating-point value pair (struct weston_CIExy) */
+static const struct config_color_params_type type_ciexy = {
+	TYPE_CIEXY, NULL, 0,
+};
+
+/* Enumerated primaries and white point (uint32_t) */
+static const struct config_color_params_type type_prims = {
+	TYPE_ENUM, config_primaries_map, ARRAY_LENGTH(config_primaries_map),
+};
+
+/* Enumerated transfer functions (uint32_t) */
+static const struct config_color_params_type type_tfs = {
+	TYPE_ENUM, config_tf_map, ARRAY_LENGTH(config_tf_map),
+};
+
+struct config_color_params {
+	uint32_t group_mask;
+
+	struct weston_color_gamut prim;
+	uint32_t prim_named;
+	uint32_t tf_named;
+	float tf_power;
+	float prim_lum[2];
+	float ref_lum;
+	struct weston_color_gamut target_prim;
+	uint32_t target_named;
+	float target_lum[2];
+	float max_cll, max_fall;
+};
+
+static bool
+config_color_params_parse(struct config_color_params *dst,
+			  struct weston_config_section *section,
+			  const char *section_name,
+			  const char *msgpfx,
+			  struct weston_compositor *compositor)
+{
+	const struct {
+		const char *name;
+		const struct config_color_params_type *type;
+		void *data;
+		enum profile_parameter_group group;
+	} keys[] = {
+		{ "prim_red",       &type_ciexy, &dst->prim.primary[0],         PARAMS_GROUP_PRIMARIES },
+		{ "prim_green",     &type_ciexy, &dst->prim.primary[1],         PARAMS_GROUP_PRIMARIES },
+		{ "prim_blue",      &type_ciexy, &dst->prim.primary[2],         PARAMS_GROUP_PRIMARIES },
+		{ "prim_white",     &type_ciexy, &dst->prim.white_point,        PARAMS_GROUP_PRIMARIES },
+		{ "prim_named",     &type_prims, &dst->prim_named,              PARAMS_GROUP_PRIMARIES_NAMED },
+		{ "tf_named",       &type_tfs,   &dst->tf_named,                PARAMS_GROUP_TF_NAMED },
+		{ "tf_power",       &type_float, &dst->tf_power,                PARAMS_GROUP_TF_POWER },
+		{ "min_lum",        &type_float, &dst->prim_lum[0],             PARAMS_GROUP_LUMINANCE },
+		{ "max_lum",        &type_float, &dst->prim_lum[1],             PARAMS_GROUP_LUMINANCE },
+		{ "ref_lum",        &type_float, &dst->ref_lum,                 PARAMS_GROUP_LUMINANCE },
+		{ "target_red",     &type_ciexy, &dst->target_prim.primary[0],  PARAMS_GROUP_TARGET_PRIMARIES },
+		{ "target_green",   &type_ciexy, &dst->target_prim.primary[1],  PARAMS_GROUP_TARGET_PRIMARIES },
+		{ "target_blue",    &type_ciexy, &dst->target_prim.primary[2],  PARAMS_GROUP_TARGET_PRIMARIES },
+		{ "target_white",   &type_ciexy, &dst->target_prim.white_point, PARAMS_GROUP_TARGET_PRIMARIES },
+		{ "target_named",   &type_prims, &dst->target_named,            PARAMS_GROUP_TARGET_PRIMARIES_NAMED },
+		{ "target_min_lum", &type_float, &dst->target_lum[0],           PARAMS_GROUP_TARGET_LUMINANCE },
+		{ "target_max_lum", &type_float, &dst->target_lum[1],           PARAMS_GROUP_TARGET_LUMINANCE },
+		{ "max_cll",        &type_float, &dst->max_cll,                 PARAMS_GROUP_MAX_CLL },
+		{ "max_fall",       &type_float, &dst->max_fall,                PARAMS_GROUP_MAX_FALL },
+	};
+
+	bool success = true;
+	bool found[ARRAY_LENGTH(keys)] = { 0 };
+	uint32_t missing_group_mask = 0;
+	enum profile_parameter_group last_error_group;
+	unsigned i;
+
+	/* Let's parse the keys and get the values given by users. */
+	for (i = 0; i < ARRAY_LENGTH(keys); i++) {
+		const struct config_color_params_type *mytype = keys[i].type;
+		char *val_str = NULL;
+		uint32_t *data_enum;
+		float *data_float;
+		struct weston_CIExy *data_ciexy;
+		const struct weston_enum_map *entry;
+		char *err_msg;
+		int ret;
+
+		ret = weston_config_section_get_string(section, keys[i].name,
+						       &val_str, NULL);
+		if (ret < 0) {
+			/* Key not present on the ini file, not an error. */
+			missing_group_mask |= keys[i].group;
+			continue;
+		}
+
+		dst->group_mask |= keys[i].group;
+		found[i] = true;
+
+		switch (mytype->data_type) {
+		case TYPE_FLOAT:
+			data_float = keys[i].data;
+			if (!parse_float_array(data_float, 1, val_str, &err_msg)) {
+				weston_log("%s name=%s, parsing %s: %s\n",
+					   msgpfx, section_name, keys[i].name, err_msg);
+				free(err_msg);
+				success = false;
+			}
+			break;
+		case TYPE_CIEXY:
+			data_ciexy = keys[i].data;
+			if (!parse_CIExy(data_ciexy, val_str, &err_msg)) {
+				weston_log("%s name=%s, parsing %s: %s\n",
+					   msgpfx, section_name, keys[i].name, err_msg);
+				free(err_msg);
+				success = false;
+			}
+			break;
+		case TYPE_ENUM:
+			data_enum = keys[i].data;
+			entry = weston_enum_map_find_name_(mytype->map, mytype->map_len, val_str);
+			if (entry) {
+				*data_enum = entry->value;
+			} else {
+				weston_log("%s name=%s, %s has unknown value '%s'.\n",
+					   msgpfx, section_name, keys[i].name, val_str);
+				success = false;
+			}
+			break;
+		}
+
+		free(val_str);
+	}
+
+	if (!success)
+		return false;
+
+	last_error_group = 0;
+	/* Ensure groups are given fully or not at all. */
+	for (i = 0; i < ARRAY_LENGTH(keys); i++) {
+		uint32_t group = keys[i].group;
+
+		if ((dst->group_mask & group) && (missing_group_mask & group)) {
+			success = false;
+			if (last_error_group == 0)
+				weston_log("%s name=%s:\n", msgpfx, section_name);
+			if (group != last_error_group) {
+				const struct weston_enum_map *e;
+
+				e = weston_enum_map_find_value(profile_parameter_group_names, group);
+				weston_assert_ptr_not_null(compositor, e);
+				weston_log_continue("    group: %s\n", e->name);
+			}
+			last_error_group = group;
+			weston_log_continue("        %s is %s.\n", keys[i].name,
+					    found[i] ? "set" : "missing");
+		}
+	}
+	if (last_error_group != 0)
+		weston_log_continue("You must set either none or all keys of a group.\n");
+
+	return success;
+}
+
+static void
+config_color_params_to_builder(struct weston_color_profile_param_builder *builder,
+			       const struct config_color_params *params)
+{
+	if (params->group_mask & PARAMS_GROUP_PRIMARIES) {
+		weston_color_profile_param_builder_set_primaries(builder,
+								 &params->prim);
+	}
+
+	if (params->group_mask & PARAMS_GROUP_PRIMARIES_NAMED) {
+		weston_color_profile_param_builder_set_primaries_named(builder,
+								       params->prim_named);
+	}
+
+	if (params->group_mask & PARAMS_GROUP_TF_POWER) {
+		weston_color_profile_param_builder_set_tf_power_exponent(builder,
+									 params->tf_power);
+	}
+
+	if (params->group_mask & PARAMS_GROUP_TF_NAMED) {
+		weston_color_profile_param_builder_set_tf_named(builder,
+								params->tf_named);
+	}
+
+	if (params->group_mask & PARAMS_GROUP_LUMINANCE) {
+		weston_color_profile_param_builder_set_primary_luminance(builder,
+									 params->ref_lum,
+									 params->prim_lum[0],
+									 params->prim_lum[1]);
+	}
+
+	if (params->group_mask & PARAMS_GROUP_TARGET_PRIMARIES) {
+		weston_color_profile_param_builder_set_target_primaries(builder,
+									&params->target_prim);
+	}
+
+	if (params->group_mask & PARAMS_GROUP_TARGET_LUMINANCE) {
+		weston_color_profile_param_builder_set_target_luminance(builder,
+									params->target_lum[0],
+									params->target_lum[1]);
+	}
+
+	if (params->group_mask & PARAMS_GROUP_TARGET_PRIMARIES_NAMED) {
+		weston_color_profile_param_builder_set_target_primaries_named(builder,
+									      params->target_named);
+	}
+
+	if (params->group_mask & PARAMS_GROUP_MAX_CLL)
+		weston_color_profile_param_builder_set_maxCLL(builder, params->max_cll);
+
+	if (params->group_mask & PARAMS_GROUP_MAX_FALL)
+		weston_color_profile_param_builder_set_maxFALL(builder, params->max_fall);
+}
+
+static struct weston_color_profile *
+wet_create_config_color_profile(struct weston_output *output,
+				struct weston_config_section *section,
+				const char *section_name,
+				const char *msgpfx)
+{
+	struct config_color_params params = {};
+	struct weston_color_profile_param_builder *builder;
+	struct weston_color_profile *cprof = NULL;
+	enum weston_color_profile_param_builder_error error;
+	char *err_msg;
+
+	if (!config_color_params_parse(&params, section, section_name,
+				       msgpfx, output->compositor)) {
+		return NULL;
+	}
+
+	builder = weston_color_profile_param_builder_create(output->compositor);
+	config_color_params_to_builder(builder, &params);
+
+	cprof = weston_color_profile_param_builder_create_color_profile(builder,
+									"frontend custom from ini",
+									&error, &err_msg);
+	if (!cprof) {
+		weston_log("%s name=%s, invalid parameter set:\n", msgpfx, section_name);
+		weston_log_indent_multiline(0, err_msg);
+		free(err_msg);
+	}
+
+	return cprof;
+}
+
+static struct weston_color_profile *
+wet_create_sRGB_profile(struct weston_compositor *compositor)
+{
+	struct weston_color_profile_param_builder *builder;
+	struct weston_color_profile *cprof;
+	enum weston_color_profile_param_builder_error err_code;
+	char *err_msg = NULL;
+
+	builder = weston_color_profile_param_builder_create(compositor);
+	weston_color_profile_param_builder_set_primaries_named(builder, WESTON_PRIMARIES_CICP_SRGB);
+	weston_color_profile_param_builder_set_tf_named(builder, WESTON_TF_GAMMA22);
+
+	cprof = weston_color_profile_param_builder_create_color_profile(builder, "frontend sRGB",
+									&err_code, &err_msg);
+	if (!cprof) {
+		weston_log("Error: creating parametric sRGB color profile failed:\n");
+		weston_log_indent_multiline(0, err_msg);
+		free(err_msg);
+	}
+
+	return cprof;
+}
+
+static void
+cta861_transfer_function(struct weston_color_profile_param_builder *builder,
+			 enum weston_eotf_mode eotf,
+			 enum weston_colorimetry_mode colorimetry)
+{
+	/* According to CTA-861-I, Table 5 - Colorimetry Transfer Characteristics: */
+
+	switch (eotf) {
+	case WESTON_EOTF_MODE_NONE:
+	case WESTON_EOTF_MODE_SDR:
+	case WESTON_EOTF_MODE_TRADITIONAL_HDR:
+		/* Determined by colorimetry */
+		break;
+	case WESTON_EOTF_MODE_ST2084:
+		weston_color_profile_param_builder_set_tf_named(builder, WESTON_TF_ST2084_PQ);
+		return;
+	case WESTON_EOTF_MODE_HLG:
+		weston_color_profile_param_builder_set_tf_named(builder, WESTON_TF_HLG);
+		return;
+	}
+
+	switch (colorimetry) {
+	case WESTON_COLORIMETRY_MODE_DEFAULT:
+		/* Contrary to CTA-861-I, assume a gamma 2.2 computer monitor. */
+		weston_color_profile_param_builder_set_tf_named(builder, WESTON_TF_GAMMA22);
+		return;
+	case WESTON_COLORIMETRY_MODE_BT2020_CYCC:
+	case WESTON_COLORIMETRY_MODE_BT2020_YCC:
+	case WESTON_COLORIMETRY_MODE_BT2020_RGB:
+		weston_color_profile_param_builder_set_tf_named(builder, WESTON_TF_BT1886);
+		return;
+	case WESTON_COLORIMETRY_MODE_P3D65:
+	case WESTON_COLORIMETRY_MODE_P3DCI:
+		weston_color_profile_param_builder_set_tf_power_exponent(builder, 2.6);
+		return;
+	case WESTON_COLORIMETRY_MODE_ICTCP:
+		/* No TF, reserved combination. */
+	default:
+		break;
+	}
+
+	/* Failed to determine TF. */
+	weston_log("Warning: no known transfer characteristic for the combination of %s and %s.\n",
+		   weston_eotf_mode_to_str(eotf), weston_colorimetry_mode_to_str(colorimetry));
+}
+
+static void
+cta861_primaries(struct weston_color_profile_param_builder *builder,
+		 enum weston_colorimetry_mode colorimetry)
+{
+	switch (colorimetry) {
+	case WESTON_COLORIMETRY_MODE_NONE:
+	case WESTON_COLORIMETRY_MODE_DEFAULT:
+		weston_color_profile_param_builder_set_primaries_named(builder, WESTON_PRIMARIES_CICP_SRGB);
+		break;
+	case WESTON_COLORIMETRY_MODE_BT2020_CYCC:
+	case WESTON_COLORIMETRY_MODE_BT2020_YCC:
+	case WESTON_COLORIMETRY_MODE_BT2020_RGB:
+		weston_color_profile_param_builder_set_primaries_named(builder, WESTON_PRIMARIES_CICP_BT2020);
+		break;
+	case WESTON_COLORIMETRY_MODE_P3D65:
+		weston_color_profile_param_builder_set_primaries_named(builder, WESTON_PRIMARIES_CICP_DISPLAY_P3);
+		break;
+	case WESTON_COLORIMETRY_MODE_P3DCI:
+		weston_color_profile_param_builder_set_primaries_named(builder, WESTON_PRIMARIES_CICP_DCI_P3);
+		break;
+	case WESTON_COLORIMETRY_MODE_ICTCP:
+		weston_color_profile_param_builder_set_primaries_named(builder, WESTON_PRIMARIES_CICP_BT2020);
+		break;
+	}
+}
+
+enum weston_auto_profile_flags {
+	WESTON_EDID_PRIMARIES = 0x01,
+	WESTON_EDID_TF = 0x02,
+	WESTON_EDID_DR = 0x04,
+};
+
+static struct weston_color_profile *
+wet_create_auto_profile(struct weston_output *output, uint32_t flags)
+{
+	enum weston_eotf_mode eotf = weston_output_get_eotf_mode(output);
+	enum weston_colorimetry_mode colorimetry = weston_output_get_colorimetry_mode(output);
+	enum weston_color_profile_param_builder_error err_code;
+	struct weston_head *head;
+	const struct di_info *di_info;
+	struct weston_color_profile_param_builder *builder;
+	struct weston_color_profile *cprof;
+	char *name_part;
+	const char *tf_part = NULL;
+	const char *prim_part = NULL;
+	const char *dr_part = NULL;
+	char *err_msg = NULL;
+	unsigned int i;
+
+	builder = weston_color_profile_param_builder_create(output->compositor);
+
+	/* TODO: handle outputs driving multiple heads. */
+	head = weston_output_get_first_head(output);
+	di_info = weston_head_get_display_info(head);
+
+	if (di_info && (flags & WESTON_EDID_TF) &&
+	    (eotf == WESTON_EOTF_MODE_SDR || eotf == WESTON_EOTF_MODE_TRADITIONAL_HDR)) {
+		float exponent;
+		exponent = di_info_get_default_gamma(di_info);
+		if (exponent != 0.0f) {
+			weston_color_profile_param_builder_set_tf_power_exponent(builder,
+										 exponent);
+			tf_part = "by EDID";
+		}
+	}
+	if (!tf_part) {
+		cta861_transfer_function(builder, eotf, colorimetry);
+		tf_part = "by CTA-861";
+	}
+
+	if (di_info && (flags & WESTON_EDID_PRIMARIES) &&
+	    colorimetry == WESTON_COLORIMETRY_MODE_DEFAULT) {
+		struct weston_color_gamut primaries;
+		const struct di_color_primaries *prim =
+			di_info_get_default_color_primaries(di_info);
+
+		if (prim->has_primaries && prim->has_default_white_point) {
+			for (i = 0; i < 3; i++) {
+				primaries.primary[i].x = prim->primary[i].x;
+				primaries.primary[i].y = prim->primary[i].y;
+			}
+			primaries.white_point.x = prim->default_white.x;
+			primaries.white_point.y = prim->default_white.y;
+
+			weston_color_profile_param_builder_set_primaries(builder, &primaries);
+			prim_part = "by EDID";
+		}
+	}
+	if (!prim_part) {
+		cta861_primaries(builder, colorimetry);
+		prim_part = "by CTA-861";
+	}
+
+	if (di_info && (flags & WESTON_EDID_DR) &&
+	    eotf == WESTON_EOTF_MODE_ST2084) {
+		float min_lum;
+		float max_lum;
+		float max_fall;
+		const struct di_hdr_static_metadata *hdr =
+			di_info_get_hdr_static_metadata(di_info);
+
+		min_lum = hdr->desired_content_min_luminance;
+		max_lum = hdr->desired_content_max_luminance;
+		max_fall = hdr->desired_content_max_frame_avg_luminance;
+
+		if (min_lum != 0.0f && max_lum != 0.0f && max_fall != 0.0f) {
+			weston_color_profile_param_builder_set_target_luminance(builder,
+										min_lum, max_lum);
+			weston_color_profile_param_builder_set_maxFALL(builder, max_fall);
+			dr_part = "by EDID";
+		}
+	}
+	if (!dr_part)
+		dr_part = "no DR info";
+
+	str_printf(&name_part, "output %s automatic, TF: %s, primaries: %s, dr: %s",
+			       output->name, tf_part, prim_part, dr_part);
+
+	cprof = weston_color_profile_param_builder_create_color_profile(builder, name_part,
+									&err_code, &err_msg);
+	if (!cprof) {
+		weston_log("Error: creating parametric color profile failed:\n");
+		weston_log_indent_multiline(0, err_msg);
+		free(err_msg);
+	}
+
+	free(name_part);
+	return cprof;
+}
+
+#define COLOR_PROF_NAME "color-profile"
+
+static struct weston_color_profile *
+wet_parse_auto_profile(struct weston_output *output,
+		       const char *flagstr)
+{
+	static const struct weston_enum_map flagmap[] = {
+		{ "edid-primaries", WESTON_EDID_PRIMARIES },
+		{ "edid-tf", WESTON_EDID_TF },
+		{ "edid-dr", WESTON_EDID_DR },
+	};
+	struct weston_string_array flagarr;
+	uint32_t flags = 0;
+	bool ok = true;
+	size_t i;
+
+	flagarr = weston_parse_space_separated_list(flagstr);
+	for (i = 0; i < flagarr.len; i++) {
+		const struct weston_enum_map *entry;
+		const char *item = flagarr.array[i];
+
+		entry = weston_enum_map_find_name(flagmap, item);
+		if (entry) {
+			flags |= entry->value;
+		} else {
+			weston_log("Config error in weston.ini, output %s, key "
+				   COLOR_PROF_NAME "=auto: invalid flag '%s'.\n",
+				   output->name, item);
+			ok = false;
+		}
+	}
+	weston_string_array_fini(&flagarr);
+
+	if (ok)
+		return wet_create_auto_profile(output, flags);
+	else
+		return NULL;
+}
+
+WESTON_EXPORT_FOR_TESTS struct weston_color_profile *
+wet_create_output_color_profile(struct weston_output *output,
+				struct weston_config *wc,
+				const char *prof_name)
+{
+	struct weston_config_section *prof_section;
+	static const char *msgpfx = "Config error in weston.ini [" COLOR_PROF_NAME "]";
+
+	if (strcmp(prof_name, "srgb:") == 0)
+		return wet_create_sRGB_profile(output->compositor);
+
+	if (strncmp(prof_name, "auto:", 5) == 0)
+		return wet_parse_auto_profile(output, prof_name + 5);
+
+	if (strchr(prof_name, ':') != NULL) {
+		weston_log("Config error in weston.ini, output %s, "
+			   COLOR_PROF_NAME "=%s is illegal. "
+			   "The ':' character is legal only for 'srgb:' and 'auto:'.\n",
+			   output->name, prof_name);
+		return NULL;
+	}
+
+	prof_section = weston_config_get_section(wc, COLOR_PROF_NAME,
+						 "name", prof_name);
+	if (!prof_section) {
+		weston_log("Config error in weston.ini, output %s: "
+			   "no [" COLOR_PROF_NAME "] section with 'name=%s' found.\n",
+			   output->name, prof_name);
+		return NULL;
+	}
+
+	return wet_create_config_color_profile(output, prof_section,
+					       prof_name, msgpfx);
+}
+
+static int
+wet_output_set_vrr_mode(struct weston_output *output,
+			struct weston_config_section *section)
+{
+	static const struct weston_enum_map vrr_modes[] = {
+		{ "none",	WESTON_VRR_MODE_NONE },
+		{ "game", 	WESTON_VRR_MODE_GAME },
+	};
+	const struct weston_enum_map *entry;
+	enum weston_vrr_mode vrr_mode = WESTON_VRR_MODE_NONE;
+	char *vrr_str = NULL;
+	unsigned int i;
+
+	weston_config_section_get_string(section, "vrr-mode", &vrr_str, NULL);
+	if (!vrr_str)
+		return vrr_mode;
+
+	entry = weston_enum_map_find_name(vrr_modes, vrr_str);
+	if (!entry) {
+		weston_log("Error in config for output '%s': '%s' is not a valid vrr mode. Try one of:",
+			   output->name, vrr_str);
+		for (i = 0; i < ARRAY_LENGTH(vrr_modes); i++)
+			weston_log_continue(" %s", vrr_modes[i].name);
+		weston_log_continue("\n");
+		free(vrr_str);
+		return -1;
+	}
+
+	vrr_mode = entry->value;
+
+	if (vrr_mode && (weston_output_get_supported_vrr_modes(output) & vrr_mode) == 0) {
+		weston_log("Error: output '%s' does not support output format %s.\n",
+			   output->name, vrr_str);
+		free(vrr_str);
+		return -1;
+	}
+
+	free(vrr_str);
+
+	if (weston_output_set_vrr_mode(output, vrr_mode) < 0)
+		return -1;
+
+	return 0;
+}
+
+static const struct weston_enum_map cvd_correction_name_map[] = {
+	{ "deuteranopia", WESTON_CVD_CORRECTION_TYPE_DEUTERANOPIA },
+	{ "protanopia", WESTON_CVD_CORRECTION_TYPE_PROTANOPIA },
+	{ "tritanopia", WESTON_CVD_CORRECTION_TYPE_TRITANOPIA },
+};
+
+static int
+wet_output_set_color_effect(struct weston_output *output,
+			    struct weston_config_section *section)
+{
+	struct wet_compositor *compositor = to_wet_compositor(output->compositor);
+	const struct weston_enum_map *entry;
+	char *color_effect = NULL;
+	bool ok = true;
+
+	weston_config_section_get_string(section, "color-effect", &color_effect, NULL);
+	if (!color_effect)
+		return 0;
+
+	if (compositor->use_color_manager) {
+		weston_log("Error: color effect can not be set for output %s, " \
+			   "color-management is enabled\n", output->name);
+		goto out;
+	}
+
+	if (strcmp(color_effect, "inversion") == 0) {
+		weston_output_color_effect_inversion(output);
+		goto out;
+	}
+
+	entry = weston_enum_map_find_name(cvd_correction_name_map, color_effect);
+	if (entry)
+		weston_output_color_effect_cvd_correction(output, entry->value);
+	else
+		weston_log("Error: unknown color effect '%s'\n", color_effect);
+
+out:
+	free(color_effect);
+	return ok ? 0 : -1;
+}
+
 static int
 wet_output_set_color_profile(struct weston_output *output,
 			     struct weston_config_section *section,
+			     struct weston_config *wc,
 			     struct weston_color_profile *parent_winsys_profile)
 {
 	struct wet_compositor *compositor = to_wet_compositor(output->compositor);
 	struct weston_color_profile *cprof;
+	char *prof_name = NULL;
 	char *icc_file = NULL;
+	char *details;
 	bool ok;
 
 	if (!compositor->use_color_manager)
 		return 0;
 
 	weston_config_section_get_string(section, "icc_profile", &icc_file, NULL);
+	if (!icc_file)
+		weston_config_section_get_string(section, COLOR_PROF_NAME, &prof_name, NULL);
+
 	if (icc_file) {
 		cprof = weston_compositor_load_icc_file(output->compositor,
 							icc_file);
 		free(icc_file);
+	} else if (prof_name) {
+		cprof = wet_create_output_color_profile(output, wc, prof_name);
+		free(prof_name);
 	} else if (parent_winsys_profile) {
 		cprof = weston_color_profile_ref(parent_winsys_profile);
 	} else {
+		/*
+		 * TODO: Once parametric color profiles are fully supported
+		 * and interoperable with ICC profiles, the default profile
+		 * would be created like this:
+		 * cprof = wet_create_output_color_profile(output, wc, "auto:");
+		 */
 		return 0;
 	}
 
@@ -1395,6 +2123,11 @@ wet_output_set_color_profile(struct weston_output *output,
 			   output->name);
 	}
 
+	weston_log("Output '%s' set to color profile:\n", output->name);
+	details = weston_color_profile_get_details(cprof);
+	weston_log_indent_multiline(0, details);
+	free(details);
+
 	weston_color_profile_unref(cprof);
 	return ok ? 0 : -1;
 }
@@ -1404,16 +2137,14 @@ wet_output_set_eotf_mode(struct weston_output *output,
 			 struct weston_config_section *section,
 			 bool have_color_manager)
 {
-	static const struct {
-		const char *name;
-		enum weston_eotf_mode eotf_mode;
-	} modes[] = {
+	static const struct weston_enum_map modes[] = {
 		{ "sdr",	WESTON_EOTF_MODE_SDR },
 		{ "hdr-gamma",	WESTON_EOTF_MODE_TRADITIONAL_HDR },
 		{ "st2084",	WESTON_EOTF_MODE_ST2084 },
 		{ "hlg",	WESTON_EOTF_MODE_HLG },
 	};
 	enum weston_eotf_mode eotf_mode = WESTON_EOTF_MODE_SDR;
+	const struct weston_enum_map *entry;
 	char *str = NULL;
 	unsigned i;
 
@@ -1425,11 +2156,8 @@ wet_output_set_eotf_mode(struct weston_output *output,
 		return 0;
 	}
 
-	for (i = 0; i < ARRAY_LENGTH(modes); i++)
-		if (strcmp(str, modes[i].name) == 0)
-			break;
-
-	if (i == ARRAY_LENGTH(modes)) {
+	entry = weston_enum_map_find_name(modes, str);
+	if (!entry) {
 		weston_log("Error in config for output '%s': '%s' is not a valid EOTF mode. Try one of:",
 			   output->name, str);
 		for (i = 0; i < ARRAY_LENGTH(modes); i++)
@@ -1438,7 +2166,7 @@ wet_output_set_eotf_mode(struct weston_output *output,
 		free(str);
 		return -1;
 	}
-	eotf_mode = modes[i].eotf_mode;
+	eotf_mode = entry->value;
 
 	if ((weston_output_get_supported_eotf_modes(output) & eotf_mode) == 0) {
 		weston_log("Error: output '%s' does not support EOTF mode %s.\n",
@@ -1465,10 +2193,7 @@ wet_output_set_colorimetry_mode(struct weston_output *output,
 				struct weston_config_section *section,
 				bool have_color_manager)
 {
-	static const struct {
-		const char *name;
-		enum weston_colorimetry_mode cmode;
-	} modes[] = {
+	static const struct weston_enum_map modes[] = {
 		{ "default",	WESTON_COLORIMETRY_MODE_DEFAULT },
 		{ "bt2020cycc",	WESTON_COLORIMETRY_MODE_BT2020_CYCC },
 		{ "bt2020ycc",	WESTON_COLORIMETRY_MODE_BT2020_YCC },
@@ -1478,6 +2203,7 @@ wet_output_set_colorimetry_mode(struct weston_output *output,
 		{ "ictcp",	WESTON_COLORIMETRY_MODE_ICTCP },
 	};
 	enum weston_colorimetry_mode cmode = WESTON_COLORIMETRY_MODE_DEFAULT;
+	const struct weston_enum_map *entry;
 	char *str = NULL;
 	unsigned i;
 
@@ -1489,11 +2215,8 @@ wet_output_set_colorimetry_mode(struct weston_output *output,
 		return 0;
 	}
 
-	for (i = 0; i < ARRAY_LENGTH(modes); i++)
-		if (strcmp(str, modes[i].name) == 0)
-			break;
-
-	if (i == ARRAY_LENGTH(modes)) {
+	entry = weston_enum_map_find_name(modes, str);
+	if (!entry) {
 		weston_log("Error in config for output '%s': '%s' is not a valid colorimetry mode. Try one of:",
 			   output->name, str);
 		for (i = 0; i < ARRAY_LENGTH(modes); i++)
@@ -1502,7 +2225,7 @@ wet_output_set_colorimetry_mode(struct weston_output *output,
 		free(str);
 		return -1;
 	}
-	cmode = modes[i].cmode;
+	cmode = entry->value;
 
 	if ((weston_output_get_supported_colorimetry_modes(output) & cmode) == 0) {
 		weston_log("Error: output '%s' does not support colorimetry mode %s.\n",
@@ -1573,7 +2296,7 @@ parse_color_characteristics(struct weston_color_characteristics *cc_out,
 					 &section_name, "<unnamed>");
 	if (strchr(section_name, ':') != NULL) {
 		ret = -1;
-		weston_log("%s name=%s: reserved name. Do not use ':' character in the name.\n",
+		weston_log("%s name=%s is a reserved name. Do not use ':' character in the name.\n",
 			   msgpfx, section_name);
 	}
 
@@ -1673,6 +2396,55 @@ wet_output_set_color_characteristics(struct weston_output *output,
 out_error:
 	free(cc_name);
 	return -1;
+}
+
+static int
+wet_output_set_color_format(struct weston_output *output,
+			    struct weston_config_section *section)
+{
+	static const struct weston_enum_map color_formats[] = {
+		{ "auto",	WESTON_COLOR_FORMAT_AUTO },
+		{ "rgb",	WESTON_COLOR_FORMAT_RGB },
+		{ "yuv444",	WESTON_COLOR_FORMAT_YUV444 },
+		{ "yuv422",	WESTON_COLOR_FORMAT_YUV422 },
+		{ "yuv420",	WESTON_COLOR_FORMAT_YUV420 },
+	};
+	enum weston_color_format color_format = WESTON_COLOR_FORMAT_AUTO;
+	const struct weston_enum_map *entry;
+	char *str = NULL;
+
+	weston_config_section_get_string(section, "color-format", &str, "auto");
+
+	entry = weston_enum_map_find_name(color_formats, str);
+	if (!entry) {
+		char *mask_to_str = NULL;
+		weston_log("Error in config for output '%s': '%s' is not a "
+			   "valid color format. Try one of: ",
+			   output->name, str);
+
+		mask_to_str = bits_to_str(WESTON_COLOR_FORMAT_ALL_MASK,
+					  weston_color_format_to_str);
+		weston_log_continue("%s\n", mask_to_str);
+
+		free(mask_to_str);
+		free(str);
+		return -1;
+	}
+	color_format = entry->value;
+
+	if ((weston_output_get_supported_color_formats(output) & color_format) == 0) {
+		weston_log("Error: output '%s' does not support output format %s\n",
+			   output->name, str);
+		free(str);
+		return -1;
+	}
+
+	weston_log("Setting output '%s' to color %s format\n",
+		   output->name, weston_color_format_to_str(color_format));
+	weston_output_set_color_format(output, color_format);
+
+	free(str);
+	return 0;
 }
 
 static void
@@ -1817,7 +2589,7 @@ wet_config_head_has_mirror_of_entry(struct wet_compositor *wet, char *head_name)
 static void
 parse_simple_mode(struct weston_output *output,
 		  struct weston_config_section *section, int *width,
-		  int *height, struct wet_output_config *defaults,
+		  int *height, int *framerate, struct wet_output_config *defaults,
 		  struct wet_output_config *parsed_options)
 {
 	*width = defaults->width;
@@ -1827,11 +2599,12 @@ parse_simple_mode(struct weston_output *output,
 		char *mode;
 
 		weston_config_section_get_string(section, "mode", &mode, NULL);
-		if (!mode || sscanf(mode, "%dx%d", width, height) != 2) {
+		if (!mode || sscanf(mode, "%dx%d@%d", width, height, framerate) < 2) {
 			weston_log("Invalid mode for output %s. Using defaults.\n",
 				   output->name);
 			*width = defaults->width;
 			*height = defaults->height;
+			*framerate = -1;
 		}
 		free(mode);
 	}
@@ -1857,6 +2630,7 @@ wet_configure_windowed_output_from_config(struct weston_output *output,
 	struct wet_output_config *parsed_options = compositor->parsed_options;
 	int width;
 	int height;
+	int framerate = -1;
 
 	assert(parsed_options);
 
@@ -1867,7 +2641,7 @@ wet_configure_windowed_output_from_config(struct weston_output *output,
 
 	section = weston_config_get_section(wc, "output", "name", output->name);
 
-	parse_simple_mode(output, section, &width, &height, defaults,
+	parse_simple_mode(output, section, &width, &height, &framerate, defaults,
 			  parsed_options);
 
 	allow_content_protection(output, section);
@@ -1878,7 +2652,10 @@ wet_configure_windowed_output_from_config(struct weston_output *output,
 		return -1;
 	}
 
-	if (wet_output_set_color_profile(output, section, NULL) < 0)
+	if (wet_output_set_color_profile(output, section, wc, NULL) < 0)
+		return -1;
+
+	if (wet_output_set_color_effect(output, section) < 0)
 		return -1;
 
 	if (api->output_set_size(output, width, height) < 0) {
@@ -2172,9 +2949,16 @@ static void
 configure_input_device_scroll(struct weston_config_section *s,
 		struct libinput_device *device)
 {
+	static const struct weston_enum_map scroll_modes[] = {
+		{ "two-finger", LIBINPUT_CONFIG_SCROLL_2FG },
+		{ "edge", LIBINPUT_CONFIG_SCROLL_EDGE },
+		{ "button", LIBINPUT_CONFIG_SCROLL_ON_BUTTON_DOWN },
+		{ "none", LIBINPUT_CONFIG_SCROLL_NO_SCROLL },
+	};
 	bool natural;
 	char *method_string = NULL;
 	uint32_t methods;
+	const struct weston_enum_map *entry;
 	enum libinput_config_scroll_method method;
 	char *button_string = NULL;
 	int button;
@@ -2191,15 +2975,10 @@ configure_input_device_scroll(struct weston_config_section *s,
 	if (weston_config_section_get_string(s, "scroll-method",
 					     &method_string, NULL) != 0)
 		goto done;
-	if (strcmp(method_string, "two-finger") == 0)
-		method = LIBINPUT_CONFIG_SCROLL_2FG;
-	else if (strcmp(method_string, "edge") == 0)
-		method = LIBINPUT_CONFIG_SCROLL_EDGE;
-	else if (strcmp(method_string, "button") == 0)
-		method = LIBINPUT_CONFIG_SCROLL_ON_BUTTON_DOWN;
-	else if (strcmp(method_string, "none") == 0)
-		method = LIBINPUT_CONFIG_SCROLL_NO_SCROLL;
-	else {
+	entry = weston_enum_map_find_name(scroll_modes, method_string);
+	if (entry) {
+		method = entry->value;
+	} else {
 		weston_log("warning: no such scroll-method: %s\n",
 			   method_string);
 		goto done;
@@ -2392,7 +3171,7 @@ drm_backend_output_configure(struct weston_output *output,
 		return -1;
 	}
 
-	if (wet_output_set_color_profile(output, section, NULL) < 0)
+	if (wet_output_set_color_effect(output, section) < 0)
 		return -1;
 
 	weston_config_section_get_string(section,
@@ -2418,9 +3197,17 @@ drm_backend_output_configure(struct weston_output *output,
 		return -1;
 	if (wet_output_set_colorimetry_mode(output, section, wet->use_color_manager) < 0)
 		return -1;
+	if (wet_output_set_color_profile(output, section, wet->config, NULL) < 0)
+		return -1;
+
+	if (wet_output_set_color_format(output, section) < 0)
+		return -1;
 
 	if (wet_output_set_color_characteristics(output,
 						 wet->config, section) < 0)
+		return -1;
+
+	if (wet_output_set_vrr_mode(output, section) < 0)
 		return -1;
 
 	return 0;
@@ -2548,6 +3335,21 @@ wet_output_compute_output_from_mirror(struct weston_output *output,
 
 	mode->height = output->native_mode_copy.height /
 			mirror->current_scale;
+
+	/* Switch width and height for transform 90 or 270 */
+	switch (output->transform) {
+	case WL_OUTPUT_TRANSFORM_90:
+	case WL_OUTPUT_TRANSFORM_270:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_270: {
+		int32_t tmp = mode->width;
+		mode->width = mode->height;
+		mode->height = tmp;
+		break;
+	}
+	default:
+		break;
+	}
 
 	mode->refresh = output->native_mode_copy.refresh;
 	*scale = output->current_scale;
@@ -2972,12 +3774,20 @@ drm_process_layoutputs(struct wet_compositor *wet)
 	}
 
 	if (wet->require_outputs == REQUIRE_OUTPUTS_ALL_FOUND &&
-	    failed_layoutputs > 0)
+	    failed_layoutputs > 0) {
+		weston_log("Error: Could not enable all found outputs\n");
 		return -1;
+	}
 	if (wet->require_outputs == REQUIRE_OUTPUTS_ANY &&
-	    failed_layoutputs == wl_list_length(&wet->layoutput_list))
+	    failed_layoutputs == wl_list_length(&wet->layoutput_list)) {
+		weston_log("Error: Could not enable any output\n");
 		return -1;
+	}
 
+	if (wet->require_outputs != REQUIRE_OUTPUTS_ANY &&
+	    !wl_list_length(&wet->layoutput_list))
+		weston_log("Warning: No output enabled, but none required "
+			   "as per configuration\n");
 	return 0;
 }
 
@@ -3046,6 +3856,7 @@ drm_backend_remoted_output_configure(struct weston_output *output,
 				     char *modeline,
 				     const struct weston_remoting_api *api)
 {
+	struct weston_config *wc = wet_get_config(output->compositor);
 	char *gbm_format = NULL;
 	char *seat = NULL;
 	char *host = NULL;
@@ -3067,7 +3878,10 @@ drm_backend_remoted_output_configure(struct weston_output *output,
 		return -1;
 	};
 
-	if (wet_output_set_color_profile(output, section, NULL) < 0)
+	if (wet_output_set_color_profile(output, section, wc, NULL) < 0)
+		return -1;
+
+	if (wet_output_set_color_effect(output, section) < 0)
 		return -1;
 
 	weston_config_section_get_string(section, "gbm-format", &gbm_format,
@@ -3209,6 +4023,7 @@ drm_backend_pipewire_output_configure(struct weston_output *output,
 				     char *modeline,
 				     const struct weston_pipewire_api *api)
 {
+	struct weston_config *wc = wet_get_config(output->compositor);
 	char *seat = NULL;
 	int ret;
 
@@ -3227,7 +4042,10 @@ drm_backend_pipewire_output_configure(struct weston_output *output,
 		return -1;
 	}
 
-	if (wet_output_set_color_profile(output, section, NULL) < 0)
+	if (wet_output_set_color_profile(output, section, wc, NULL) < 0)
+		return -1;
+
+	if (wet_output_set_color_effect(output, section) < 0)
 		return -1;
 
 	weston_config_section_get_string(section, "seat", &seat, "");
@@ -3381,6 +4199,7 @@ load_drm_backend(struct weston_compositor *c, int *argc, char **argv,
 	struct wet_backend *wb;
 	bool without_input = false;
 	bool force_pixman = false;
+	bool offload_blend_to_output = false;
 
 	wet->drm_use_current_mode = false;
 
@@ -3409,7 +4228,14 @@ load_drm_backend(struct weston_compositor *c, int *argc, char **argv,
 		config.renderer = renderer;
 	}
 
-	section = weston_config_get_section(wc, "core", NULL, NULL);
+	weston_config_section_get_bool(section, "offload-blend-to-output",
+				       &offload_blend_to_output, false);
+
+	if (!c->color_manager && offload_blend_to_output)
+		offload_blend_to_output = false;
+
+	config.offload_blend_to_output = offload_blend_to_output;
+
 	weston_config_section_get_string(section,
 					 "gbm-format", &config.gbm_format,
 					 NULL);
@@ -3479,6 +4305,7 @@ load_headless_backend(struct weston_compositor *c,
 	struct wet_backend *wb;
 	bool force_pixman;
 	bool force_gl;
+	bool force_vulkan;
 	bool no_outputs = false;
 	char *transform = NULL;
 
@@ -3491,6 +4318,8 @@ load_headless_backend(struct weston_compositor *c,
 				       false);
 	weston_config_section_get_bool(section, "use-gl", &force_gl,
 				       false);
+	weston_config_section_get_bool(section, "use-vulkan", &force_vulkan,
+				       false);
 	weston_config_section_get_bool(section, "output-decorations", &config.decorate,
 				       false);
 
@@ -3500,22 +4329,28 @@ load_headless_backend(struct weston_compositor *c,
 		{ WESTON_OPTION_INTEGER, "scale", 0, &parsed_options->scale },
 		{ WESTON_OPTION_BOOLEAN, "use-pixman", 0, &force_pixman },
 		{ WESTON_OPTION_BOOLEAN, "use-gl", 0, &force_gl },
+		{ WESTON_OPTION_BOOLEAN, "use-vulkan", 0, &force_vulkan },
 		{ WESTON_OPTION_STRING, "transform", 0, &transform },
 		{ WESTON_OPTION_BOOLEAN, "no-outputs", 0, &no_outputs },
 		{ WESTON_OPTION_INTEGER, "refresh-rate", 0, &config.refresh },
+		{ WESTON_OPTION_BOOLEAN, "fake-seat", 0, &config.fake_seat },
 	};
 	config.refresh = -1;
 
 	parse_options(options, ARRAY_LENGTH(options), argc, argv);
 
 	if ((force_pixman && force_gl) ||
-	    (renderer != WESTON_RENDERER_AUTO && (force_pixman || force_gl))) {
+	    (force_pixman && force_vulkan) ||
+	    (force_gl && force_vulkan) ||
+	    (renderer != WESTON_RENDERER_AUTO && (force_pixman || force_gl || force_vulkan))) {
 		weston_log("Conflicting renderer specifications\n");
 		return -1;
 	} else if (force_pixman) {
 		config.renderer = WESTON_RENDERER_PIXMAN;
 	} else if (force_gl) {
 		config.renderer = WESTON_RENDERER_GL;
+	} else if (force_vulkan) {
+		config.renderer = WESTON_RENDERER_VULKAN;
 	} else {
 		config.renderer = renderer;
 	}
@@ -3569,6 +4404,7 @@ pipewire_backend_output_configure(struct weston_output *output)
 	char *gbm_format = NULL;
 	int width;
 	int height;
+	int framerate = -1;
 
 	assert(parsed_options);
 
@@ -3579,7 +4415,7 @@ pipewire_backend_output_configure(struct weston_output *output)
 
 	section = weston_config_get_section(wc, "output", "name", output->name);
 
-	parse_simple_mode(output, section, &width, &height, &defaults,
+	parse_simple_mode(output, section, &width, &height, &framerate, &defaults,
 			  parsed_options);
 
 	weston_config_section_get_string(section, "gbm-format", &gbm_format, NULL);
@@ -3590,7 +4426,7 @@ pipewire_backend_output_configure(struct weston_output *output)
 	api->set_gbm_format(output, gbm_format);
 	free(gbm_format);
 
-	if (api->output_set_size(output, width, height) < 0) {
+	if (api->output_set_size(output, width, height, framerate) < 0) {
 		weston_log("Cannot configure output \"%s\" using weston_pipewire_output_api.\n",
 			   output->name);
 		return -1;
@@ -3805,6 +4641,7 @@ vnc_backend_output_configure(struct weston_output *output)
 	struct weston_config_section *section;
 	int width;
 	int height;
+	int framerate = -1;
 	bool resizeable;
 
 	assert(parsed_options);
@@ -3816,7 +4653,7 @@ vnc_backend_output_configure(struct weston_output *output)
 
 	section = weston_config_get_section(wc, "output", "name", output->name);
 
-	parse_simple_mode(output, section, &width, &height, &defaults,
+	parse_simple_mode(output, section, &width, &height, &framerate, &defaults,
 			  compositor->parsed_options);
 
 	weston_config_section_get_bool(section, "resizeable", &resizeable, true);
@@ -4357,12 +5194,48 @@ weston_log_setup_scopes(struct weston_log_context *log_ctx,
 {
 	assert(log_ctx);
 	assert(subscriber);
+	char *saved_token = NULL;
 
 	char *tokenize = strdup(names);
-	char *token = strtok(tokenize, ",");
+	char *token = strtok_r(tokenize, ",", &saved_token);
+
 	while (token) {
 		weston_log_subscribe(log_ctx, subscriber, token);
-		token = strtok(NULL, ",");
+		token = strtok_r(NULL, ",", &saved_token);
+	}
+	free(tokenize);
+}
+
+static void
+weston_log_print_all_advertised_scopes(struct weston_compositor *ec)
+{
+	struct weston_log_scope *nscope = NULL;
+
+	weston_log("Currently advertised debug scopes:\n");
+
+	while ((nscope = weston_log_scopes_iterate(ec->weston_log_ctx, nscope))) {
+		const char *name = weston_log_scope_get_name(nscope);
+		const char *desc = weston_log_scope_get_description(nscope);
+
+		if (weston_log_scope_to_be_advertised(ec->weston_log_ctx, name))
+			weston_log_continue(STAMP_SPACE "'%s' - %s", name, desc);
+	}
+}
+
+static void
+weston_log_setup_advertising_scopes(struct weston_log_context *log_ctx,
+				    const char *names)
+{
+	assert(log_ctx);
+
+	char *saved_token = NULL;
+
+	char *tokenize = strdup(names);
+	char *token = strtok_r(tokenize, ",", &saved_token);
+
+	while (token) {
+		weston_add_scope_to_advertised_list(log_ctx, token);
+		token = strtok_r(NULL, ",", &saved_token);
 	}
 	free(tokenize);
 }
@@ -4381,8 +5254,12 @@ weston_log_subscribe_to_scopes(struct weston_log_context *log_ctx,
 			       struct weston_log_subscriber *logger,
 			       struct weston_log_subscriber *flight_rec,
 			       const char *log_scopes,
-			       const char *flight_rec_scopes)
+			       const char *flight_rec_scopes,
+			       const char *debug_scopes)
 {
+	if (debug_scopes)
+		weston_log_setup_advertising_scopes(log_ctx, debug_scopes);
+
 	if (logger && log_scopes)
 		weston_log_setup_scopes(log_ctx, logger, log_scopes);
 	else
@@ -4422,6 +5299,7 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 	char *renderer = NULL;
 	char *shell = NULL;
 	bool xwayland = false;
+	bool no_xwm_decorations = false;
 	char *modules = NULL;
 	char *option_modules = NULL;
 	char *log = NULL;
@@ -4435,6 +5313,7 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 	int32_t version = 0;
 	int32_t noconfig = 0;
 	int32_t debug_protocol = 0;
+	char *debug_scopes = NULL;
 	bool numlock_on;
 	char *config_file = NULL;
 	struct weston_config *config = NULL;
@@ -4463,6 +5342,7 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 		{ WESTON_OPTION_INTEGER, "idle-time", 'i', &idle_time },
 #if defined(BUILD_XWAYLAND)
 		{ WESTON_OPTION_BOOLEAN, "xwayland", 0, &xwayland },
+		{ WESTON_OPTION_BOOLEAN, "no-xwm-decorations", 0, &no_xwm_decorations },
 #endif
 		{ WESTON_OPTION_STRING, "modules", 0, &option_modules },
 		{ WESTON_OPTION_STRING, "log", 0, &log },
@@ -4472,6 +5352,7 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 		{ WESTON_OPTION_STRING, "config", 'c', &config_file },
 		{ WESTON_OPTION_BOOLEAN, "wait-for-debugger", 0, &wait_for_debugger },
 		{ WESTON_OPTION_BOOLEAN, "debug", 0, &debug_protocol },
+		{ WESTON_OPTION_STRING, "debug-scopes", 'd', &debug_scopes },
 		{ WESTON_OPTION_STRING, "logger-scopes", 'l', &log_scopes },
 		{ WESTON_OPTION_STRING, "flight-rec-scopes", 'f', &flight_rec_scopes },
 	};
@@ -4518,8 +5399,10 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 	if (flight_rec_scopes && strlen(flight_rec_scopes) > 0)
 		flight_rec = weston_log_subscriber_create_flight_rec(DEFAULT_FLIGHT_REC_SIZE);
 
+
 	weston_log_subscribe_to_scopes(log_ctx, logger, flight_rec,
-				       log_scopes, flight_rec_scopes);
+				       log_scopes, flight_rec_scopes,
+				       debug_scopes);
 
 	weston_log("%s\n"
 		   STAMP_SPACE "%s\n"
@@ -4531,8 +5414,11 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 	free(cmdline);
 	log_uname();
 
-	weston_log("Flight recorder: %s\n", flight_rec ? "enabled" : "disabled");
-	verify_xdg_runtime_dir();
+	weston_log("Flight recorder: %s", flight_rec ? "enabled" : "disabled");
+	if (flight_rec)
+		weston_log_continue(", scopes subscribed: %s", flight_rec_scopes);
+
+	weston_log_continue("\n");
 
 	display = wl_display_create();
 	if (display == NULL) {
@@ -4628,6 +5514,8 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 		weston_compositor_add_screenshot_authority(wet.compositor,
 							   &wet.screenshot_auth,
 							   screenshot_allow_all);
+
+		weston_compositor_arm_surface_counter_fps(wet.compositor);
 	}
 
 	if (flight_rec)
@@ -4727,6 +5615,7 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 		if (!wet_xwl)
 			goto out;
 	}
+	wet.compositor->no_xwm_decorations = no_xwm_decorations;
 
 	weston_config_section_get_string(section, "modules", &modules, "");
 	if (load_modules(wet.compositor, modules, &argc, argv) < 0)
@@ -4736,6 +5625,9 @@ wet_main(int argc, char *argv[], const struct weston_testsuite_data *test_data)
 		goto out;
 
 	load_additional_modules(wet);
+
+	if (debug_protocol)
+		weston_log_print_all_advertised_scopes(wet.compositor);
 
 	section = weston_config_get_section(config, "keyboard", NULL, NULL);
 	weston_config_section_get_bool(section, "numlock-on", &numlock_on, false);

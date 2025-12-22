@@ -16,6 +16,7 @@ deps_weston = [
 	dep_libevdev,
 	dep_libdl,
 	dep_threads,
+	dep_libdisplay_info,
 ]
 
 if get_option('xwayland')
@@ -67,7 +68,8 @@ install_data(
 	install_dir: dir_data / 'wayland-sessions'
 )
 
-if get_option('screenshare')
+if get_option('deprecated-screenshare') and get_option('deprecated-shell-fullscreen')
+        warning('deprecated-screenshare. This will go away, see https://gitlab.freedesktop.org/wayland/weston/-/issues/848. Consider using mirroring (see man page) for same functionality and better performance.')
 	srcs_screenshare = [
 		'screen-share.c',
 		fullscreen_shell_unstable_v1_client_protocol_h,

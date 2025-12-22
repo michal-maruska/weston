@@ -51,6 +51,7 @@
 #include "shared/helpers.h"
 #include "shared/xalloc.h"
 #include "frontend/weston.h"
+#include <libweston/shell-utils.h>
 
 /* Representation of ivi_surface protocol object. */
 struct ivi_shell_surface
@@ -214,7 +215,7 @@ ivi_shell_surface_get_label(struct weston_surface *surface,
 {
 	struct ivi_shell_surface *shell_surf = get_ivi_shell_surface(surface);
 
-	return snprintf(buf, len, "ivi-surface %#x", shell_surf->id_surface);
+	return snprintf(buf, len, "ivi-surface %u", shell_surf->id_surface);
 }
 
 static void
@@ -622,7 +623,7 @@ static void
 desktop_surface_ping_timeout(struct weston_desktop_client *client,
 			     void *user_data)
 {
-	/* Not supported */
+	ivi_layout_desktop_surface_ping_timeout(client);
 }
 
 static void
@@ -645,6 +646,8 @@ desktop_surface_added(struct weston_desktop_surface *surface,
 	layout_surface = ivi_layout_desktop_surface_create(weston_surf, surface);
 
 	ivisurf = xzalloc(sizeof *ivisurf);
+
+	weston_surface_set_label_func(weston_surf, weston_shell_utils_surface_get_label);
 
 	ivisurf->shell = shell;
 	ivisurf->id_surface = IVI_INVALID_ID;

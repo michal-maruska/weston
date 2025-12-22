@@ -26,14 +26,22 @@ MESA_DEV_PKGS="
 	python3-mako
 "
 
+# These get temporarily installed for other build dependencies and then
+# force-removed.
+# cmake is used by Vulkan-Headers
+BUILD_DEV_PKGS="
+	cmake
+"
+
 # Needed for running the custom-built mesa
 MESA_RUNTIME_PKGS="
 	libllvm${LLVM_VERSION}
 "
 
-if [ x"$USE_BOOKWORM_BACKPORTS" = "xy" ] ; then
-	echo 'deb http://deb.debian.org/debian bookworm-backports main' >> /etc/apt/sources.list
+if [ x"$USE_DEBIAN_BACKPORTS" = "xy" ] ; then
+	echo 'deb http://deb.debian.org/debian '${FDO_DISTRIBUTION_VERSION}'-backports main' >> /etc/apt/sources.list
 fi
+
 apt-get update
 apt-get -y --no-install-recommends install \
 	autoconf \
@@ -45,6 +53,7 @@ apt-get -y --no-install-recommends install \
 	graphviz \
 	gcovr \
 	git \
+	glslang-tools \
 	hwdata \
 	lcov \
 	libasound2-dev \
@@ -59,7 +68,7 @@ apt-get -y --no-install-recommends install \
 	libexpat1-dev \
 	libffi-dev \
 	libgbm-dev \
-	libgdk-pixbuf2.0-dev \
+	libgdk-pixbuf-xlib-2.0-dev \
 	libgles2-mesa-dev \
 	libglu1-mesa-dev \
 	libgstreamer1.0-dev \
@@ -68,6 +77,7 @@ apt-get -y --no-install-recommends install \
 	libjack-jackd2-dev \
 	libjpeg-dev \
 	libjpeg-dev \
+	liblua5.4-dev \
 	libmtdev-dev \
 	libpam0g-dev \
 	libpango1.0-dev \
@@ -122,7 +132,9 @@ apt-get -y --no-install-recommends install \
 	cargo rustc \
 	iproute2 udev \
 	$MESA_DEV_PKGS \
+	$BUILD_DEV_PKGS \
 	$MESA_RUNTIME_PKGS \
+	$PACKAGES_SPECIFIC \
 	$LINUX_DEV_PKGS \
 
 if [ "$FREERDP_VERSION" -ne 0 ] ; then
@@ -135,4 +147,4 @@ fi
 
 # And remove packages which are only required for our build dependencies,
 # which we don't need bloating the image whilst we build and run Weston.
-apt-get -y --autoremove purge $LINUX_DEV_PKGS $MESA_DEV_PKGS
+apt-get -y --autoremove purge $LINUX_DEV_PKGS $MESA_DEV_PKGS $BUILD_DEV_PKGS

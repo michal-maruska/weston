@@ -141,8 +141,9 @@ force the contents to be printed on :samp:`stdout` file-descriptor.
 The user has first to specify which log scope to subscribe to.
 
 Specifying which scopes to subscribe for the flight-recorder can be done using
-:samp:`--flight-rec-scopes`. By default, the 'log' scope and 'drm-backend' are
-the scopes subscribed to.
+:samp:`-f|--flight-rec-scopes`. By default, only the 'log' scope is subscribed
+to. See :ref:`debugging flight recorder` on how retrieve the contents of the
+flight recorder in case Weston dies/crashes unexpectedly.
 
 weston-debug protocol
 ~~~~~~~~~~~~~~~~~~~~~
@@ -178,6 +179,13 @@ The following illustrates how to use it:
    ./weston-debug timeline > log.json
    ./wesgr -i log.json -o log.svg
 
+Weston has experimental support for `Perfetto <https://perfetto.dev>`_ for
+performance profiling. It can be enabled by using `-Dperfetto=true` during
+the meson invocation to configure the build.
+
+If Perfetto support is built in, timeline points are added to Perfetto tracks
+when Perfetto is running, even when the 'timeline' scope is not enabled.
+
 Inserting timeline points
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -185,6 +193,13 @@ Timline points can be inserted using :c:macro:`TL_POINT` macro. The macro will
 take the :type:`weston_compositor` instance, followed by the name of the
 timeline point. What follows next is a variable number of arguments, which
 **must** end with the macro :c:macro:`TLP_END`.
+
+Adding Perfetto trace points
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In addition to timeline points, Perfetto can also display timing information
+for individual functions. The easiest way to add profiling data for a function
+is to insert the :c:macro:`WESTON_TRACE_FUNC` at the top of the function.
 
 Debug protocol API
 ------------------
