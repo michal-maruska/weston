@@ -1,6 +1,8 @@
 weston (14.0.92-1) UNRELEASED; urgency=medium
 
   * New upstream release (beta release for 15.0.0)
+  * Disable experimental Vulkan-renderer for now because its tests fail,
+     redefine tests as fatal in debian/rules.
 
  -- Dylan Aïssi <daissi@debian.org>  Mon, 12 Jan 2026 17:29:22 +0100
 
