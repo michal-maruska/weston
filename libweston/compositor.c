@@ -441,6 +441,16 @@ weston_paint_node_remove_z_order_link(struct weston_paint_node *pnode)
 	if (!wl_list_empty(&pnode->z_order_link))
 		paint_node_damage_below(pnode, &pnode->visible);
 
+	/* Once we unlink this paint node, it will no longer be seen by
+	 * the paint node update functions that accumulate paint node
+	 * changes for the output. Those changes might be used by the
+	 * backend to decide whether it needs to regenerate plane state
+	 * or not.
+	 *
+	 * Flag changes as dirty so the backends know something happened.
+	 */
+	pnode->output->paint_node_changes |= WESTON_PAINT_NODE_ALL_DIRTY;
+
 	/* Clear damage related variables to as-new state */
 	pnode->plane = NULL;
 	pixman_region32_clear(&pnode->visible_previous);
@@ -4309,11 +4319,20 @@ weston_output_finish_frame(struct weston_output *output,
 
 	/* If we haven't been supplied any timestamp at all, we don't have a
 	 * timebase to work against, so any delay just wastes time. Push a
-	 * repaint as soon as possible so we can get on with it. */
+	 * repaint as soon as possible so we can get on with it.
+	 *
+	 * We must not delay because the compositor hits this path at startup,
+	 * and the drm backend must have all its outputs repaint at the same
+	 * time (regardless of their refresh rates) for the first repaint,
+	 * or the combination of new and stale state will prevent the flip.
+	 */
 	if (!stamp) {
 		output->next_present = now;
+		output->next_repaint = now;
 		output->frame_flags = 0;
-		goto out;
+		output->repaint_status = REPAINT_SCHEDULED;
+		weston_repaint_timer_arm(compositor);
+		return;
 	}
 
 	vblank_monotonic = convert_presentation_time_now(compositor,
@@ -9512,11 +9531,17 @@ debug_scene_view_print_paint_node(FILE *fp,
 	struct weston_paint_node *pnode;
 
 	pnode = weston_view_find_paint_node(view, output);
-	fprintf(fp, "\t\t\tpaint node %p:\n", pnode);
+	if (!pnode)
+		fprintf(fp, "\t\t\tpaint node [pending repaint]:\n");
+	else
+		fprintf(fp, "\t\t\tpaint node %p:\n", pnode);
 
 	fprintf(fp, "\t\t\t\toutput: %d (%s)%s\n",
 		output->id, output->name,
 		(view->output == output) ? " (primary)" : "");
+
+	if (!pnode)
+		return;
 
 	fprintf(fp, "\t\t\t\tBuffer to output transform: ");
 	if (!pnode->valid_transform)
@@ -9779,7 +9804,15 @@ static void
 debug_scene_graph_cb(struct weston_log_subscription *sub, void *data)
 {
 	struct weston_compositor *ec = data;
-	char *str = weston_compositor_print_scene_graph(ec);
+	char *str;
+
+	/* If the presentation_clock is CLOCK_REALTIME, then it is
+	 * uninitialized.  This means no back-end is loaded yet, so we can't
+	 * dump the scene graph. */
+	if (ec->presentation_clock == CLOCK_REALTIME)
+		return;
+
+	str = weston_compositor_print_scene_graph(ec);
 
 	weston_log_subscription_printf(sub, "%s", str);
 	free(str);
