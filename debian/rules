@@ -8,6 +8,14 @@ else
 BACKEND_VNC=true
 endif
 
+# Disable the Vulkan Render on armhf because
+# it causes regressions on build-time tests. (mesa issue?)
+ifneq (,$(filter armhf,$(DEB_HOST_ARCH)))
+RENDERER_VULKAN=false
+else
+RENDERER_VULKAN=true
+endif
+
 ifeq (,$(filter weston-doc,$(shell dh_listpackages)))
 CONFIGURE_FLAGS = -Ddoc=false
 else
@@ -18,6 +26,7 @@ override_dh_auto_configure:
 	dh_auto_configure -- \
 	        -Dbackend-rdp=true \
 	        -Dbackend-vnc=$(BACKEND_VNC) \
+	        -Drenderer-vulkan=$(RENDERER_VULKAN) \
 		-Dsystemd=true \
 		$(CONFIGURE_FLAGS)
 
