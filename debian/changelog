@@ -1,4 +1,4 @@
-weston (14.0.94-1) UNRELEASED; urgency=medium
+weston (14.0.94-1) experimental; urgency=medium
 
   * New upstream release (RC2 release for 15.0.0)
   * Disable the Vulkan Render on armhf because it causes regressions
@@ -7,7 +7,7 @@ weston (14.0.94-1) UNRELEASED; urgency=medium
   * Remove redundant Priority: optional
   * Bump Standards-Version to 4.7.3
 
- -- Dylan Aïssi <daissi@debian.org>  Mon, 26 Jan 2026 12:47:11 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 26 Jan 2026 14:03:58 +0100
 
 weston (14.0.93-1) experimental; urgency=medium
 
