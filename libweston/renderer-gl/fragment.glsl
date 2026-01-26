@@ -93,7 +93,8 @@ compile_const bool c_need_color_pipeline =
 	c_color_mapping != SHADER_COLOR_MAPPING_IDENTITY ||
 	c_color_post_curve != SHADER_COLOR_CURVE_IDENTITY;
 compile_const bool c_need_straight_alpha =
-	c_need_color_pipeline || c_color_effect != SHADER_COLOR_EFFECT_NONE;
+	c_need_color_pipeline ||
+	c_color_effect == SHADER_COLOR_EFFECT_INVERSION;
 
 uniform HIGHPRECISION mat3 yuv_coefficients;
 uniform HIGHPRECISION vec3 yuv_offsets;
@@ -156,8 +157,7 @@ uniform HIGHPRECISION vec2 color_mapping_lut_scale_offset;
 uniform HIGHPRECISION mat3 color_mapping_matrix;
 uniform HIGHPRECISION vec3 color_mapping_offset;
 
-uniform HIGHPRECISION mat3 color_cvd_simulation;
-uniform HIGHPRECISION mat3 color_cvd_redistribution;
+uniform HIGHPRECISION mat3 cvd_correction_matrix;
 
 /*
  * 2D texture sampler abstracting away the lack of swizzles on OpenGL ES 2. This
@@ -459,8 +459,7 @@ color_inversion(vec4 color)
 vec4
 color_cvd_correction(vec4 color)
 {
-	vec3 original, error;
-	vec4 res;
+	vec3 original;
 
 	/**
 	 * See weston_output_color_effect_cvd_correction() for more details.
@@ -468,9 +467,7 @@ color_cvd_correction(vec4 color)
 
 	original = color.rgb;
 
-	color.rgb = color_cvd_simulation * original;
-	error = original - color.rgb;
-	color.rgb = original + color_cvd_redistribution * error;
+	color.rgb = cvd_correction_matrix * original;
 	color.rgb = clamp(color.rgb, 0.0, 1.0);
 
 	return color;
@@ -494,7 +491,7 @@ main()
 	/* Electrical (non-linear) RGBA values, may be premult or not */
 	color = sample_input_texture();
 
-	/* Ensure straight alpha for color pipeline and color effects */
+	/* Ensure straight alpha for e.g. color pipeline, color inversion */
 	if (c_input_is_premult && c_need_straight_alpha) {
 		if (color.a == 0.0)
 			color.rgb = vec3(0, 0, 0);
