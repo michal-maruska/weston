@@ -4,6 +4,7 @@ weston (14.0.94-1) UNRELEASED; urgency=medium
   * Disable the Vulkan Render on armhf because it causes regressions
     on build-time tests.
   * Remove redundant Rules-Requires-Root
+  * Remove redundant Priority: optional
 
  -- Dylan Aïssi <daissi@debian.org>  Mon, 26 Jan 2026 12:47:11 +0100
 

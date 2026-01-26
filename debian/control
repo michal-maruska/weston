@@ -5,7 +5,6 @@ Uploaders: Mike Gabriel <sunweaver@debian.org>,
            Emilio Pozuelo Monfort <pochu@debian.org>,
            Dylan Aïssi <daissi@debian.org>
 Section: x11
-Priority: optional
 Build-Depends: debhelper-compat (= 13),
                dh-exec,
                freerdp3-dev,
