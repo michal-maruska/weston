@@ -5,6 +5,7 @@ weston (14.0.94-1) UNRELEASED; urgency=medium
     on build-time tests.
   * Remove redundant Rules-Requires-Root
   * Remove redundant Priority: optional
+  * Bump Standards-Version to 4.7.3
 
  -- Dylan Aïssi <daissi@debian.org>  Mon, 26 Jan 2026 12:47:11 +0100
 
