@@ -211,6 +211,7 @@ paint_node_update_early(struct weston_paint_node *pnode)
 	bool output_dirty = pnode->status & WESTON_PAINT_NODE_OUTPUT_DIRTY;
 	bool buffer_dirty = pnode->status & WESTON_PAINT_NODE_BUFFER_DIRTY;
 	bool recording_censor, unprotected_censor;
+	bool was_solid = pnode->draw_solid;
 	struct weston_buffer *buffer;
 
 	if (view_dirty || output_dirty) {
@@ -221,10 +222,6 @@ paint_node_update_early(struct weston_paint_node *pnode)
 
 		pnode->valid_transform = weston_matrix_to_transform(mat,
 								    &pnode->transform);
-		pnode->is_fully_opaque = weston_view_is_opaque(pnode->view,
-							       &pnode->view->transform.boundingbox);
-		pnode->is_fully_blended = weston_view_is_fully_blended(pnode->view,
-								       &pnode->view->transform.boundingbox);
 	}
 
 	buffer = pnode->surface->buffer_ref.buffer;
@@ -261,6 +258,13 @@ paint_node_update_early(struct weston_paint_node *pnode)
 		pnode->is_fully_opaque = (pnode->view->alpha == 1.0f);
 		pnode->is_fully_blended = !pnode->is_fully_opaque;
 		get_placeholder_color(pnode, &pnode->solid);
+	}
+
+	if (!pnode->draw_solid && (was_solid || view_dirty)) {
+		pnode->is_fully_opaque = weston_view_is_opaque(pnode->view,
+							       &pnode->view->transform.boundingbox);
+		pnode->is_fully_blended = weston_view_is_fully_blended(pnode->view,
+								       &pnode->view->transform.boundingbox);
 	}
 
 	if (buffer_dirty)
@@ -4320,6 +4324,11 @@ weston_output_finish_frame(struct weston_output *output,
 	else
 		assert(presented_flags & WP_PRESENTATION_FEEDBACK_INVALID);
 
+	if (output->backend->deferred) {
+		output->repaint_status = REPAINT_DEFERRED;
+		return;
+	}
+
 	weston_compositor_read_presentation_clock(compositor, &now);
 
 	/* If we haven't been supplied any timestamp at all, we don't have a
@@ -4687,6 +4696,11 @@ weston_output_schedule_repaint(struct weston_output *output)
 	 * that a repaint is needed and schedule one. */
 	if (output->repaint_status != REPAINT_NOT_SCHEDULED)
 		return;
+
+	if (output->backend->deferred) {
+		output->repaint_status = REPAINT_DEFERRED;
+		return;
+	}
 
 	output->repaint_status = REPAINT_BEGIN_FROM_IDLE;
 	assert(!output->idle_repaint_source);
@@ -9412,6 +9426,8 @@ output_repaint_status_text(struct weston_output *output)
 		return "repaint scheduled";
 	case REPAINT_AWAITING_COMPLETION:
 		return "awaiting completion";
+	case REPAINT_DEFERRED:
+		return "deferred";
 	}
 
 	assert(!"output_repaint_status_text missing enum");
@@ -9750,6 +9766,8 @@ weston_compositor_print_scene_graph(struct weston_compositor *ec)
 			fprintf(fp, "\tto be presented at: %" PRId64 ".%09ld\n",
 				(int64_t)output->next_present.tv_sec,
 				output->next_present.tv_nsec);
+		} else  if (output->repaint_status == REPAINT_DEFERRED) {
+			fprintf(fp, "\tDeferred pending backend recovery\n");
 		}
 		wl_list_for_each(head, &output->head_list, output_link) {
 			fprintf(fp, "\tHead %d (%s): %sconnected\n",
@@ -10917,6 +10935,31 @@ weston_output_set_ready(struct weston_output *output)
 {
 	if (!output->ready) {
 		output->ready = true;
+		weston_output_schedule_repaint(output);
+	}
+}
+
+WL_EXPORT void
+weston_backend_set_deferred(struct weston_backend *backend)
+{
+	backend->deferred = true;
+}
+
+WL_EXPORT void
+weston_backend_clear_deferred(struct weston_backend *backend,
+			      struct weston_compositor *compositor)
+{
+	struct weston_output *output;
+
+	backend->deferred = false;
+
+	wl_list_for_each(output, &compositor->output_list, link) {
+		if (output->backend != backend)
+			continue;
+		if (output->repaint_status != REPAINT_DEFERRED)
+			continue;
+
+		output->repaint_status = REPAINT_NOT_SCHEDULED;
 		weston_output_schedule_repaint(output);
 	}
 }
