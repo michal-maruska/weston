@@ -169,6 +169,13 @@ enum drm_plane_subtype {
 	PLANE_SUBTYPE_BOTH = 2,
 };
 
+enum drm_recovery_status {
+	DRM_RECOVERY_UNNECESSARY = 0,
+	DRM_RECOVERY_WAIT_FOR_IDLE = 1,
+	DRM_RECOVERY_SCHEDULED = 2,
+	DRM_RECOVERY_APPLIED = 3,
+};
+
 struct drm_device {
 	struct drm_backend *backend;
 
@@ -194,7 +201,9 @@ struct drm_device {
 
 	bool will_repaint;
 
-	bool state_invalid;
+	enum drm_recovery_status recovery_status;
+
+	int32_t atomic_completes_pending;
 
 	bool atomic_modeset;
 
@@ -345,7 +354,6 @@ enum drm_output_propose_state_mode {
 	DRM_OUTPUT_PROPOSE_STATE_RENDERER_AND_CURSOR, /**< only assign to renderer & cursor plane */
 	DRM_OUTPUT_PROPOSE_STATE_RENDERER_ONLY, /**< only assign to renderer */
 	DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY, /**< no renderer use, only planes */
-	DRM_OUTPUT_PROPOSE_STATE_REUSE = 128, /**< bit indicates reuse prior state with new buffers */
 };
 
 /*
@@ -647,6 +655,15 @@ to_drm_head(struct weston_head *base)
 		return NULL;
 	return container_of(base, struct drm_head, base);
 }
+
+void
+drm_device_recovery_schedule(struct drm_device *device);
+
+void
+drm_device_recovery_required(struct drm_device *device);
+
+void
+drm_device_recovery_complete(struct drm_device *device);
 
 void
 drm_writeback_reference_planes(struct drm_writeback_state *state,
