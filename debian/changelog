@@ -1,6 +1,7 @@
 weston (14.0.95-1) UNRELEASED; urgency=medium
 
   * New upstream release (RC3 release for 15.0.0)
+  * Update symbols file: add 2 new symbols
 
  -- Dylan Aïssi <daissi@debian.org>  Wed, 04 Feb 2026 22:56:02 +0100
 

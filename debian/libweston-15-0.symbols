@@ -60,6 +60,8 @@ libweston-15.so.0 libweston-15-0 #MINVER#
  weston_CIExy_to_XYZ@Base 14.0.91
  weston_add_scope_to_advertised_list@Base 14.0.91
  weston_authenticate_user@Base 12.0.0
+ weston_backend_clear_deferred@Base 14.0.95
+ weston_backend_set_deferred@Base 14.0.95
  weston_binding_destroy@Base 12.0.0
  weston_bradford_adaptation@Base 14.0.91
  weston_buffer_create_solid_rgba@Base 12.0.0
