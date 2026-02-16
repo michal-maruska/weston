@@ -495,8 +495,8 @@ try_pnode_on_cursor_plane(struct drm_output *output, struct weston_paint_node *p
 }
 
 static bool
-view_with_region_matches_output_entirely(struct weston_view *ev,
-					 pixman_region32_t *region,
+view_with_region_matches_output_entirely(struct weston_paint_node *pnode,
+					 const pixman_region32_t *background_region,
 					 struct weston_output *output)
 {
 	pixman_region32_t combined_region;
@@ -504,12 +504,18 @@ view_with_region_matches_output_entirely(struct weston_view *ev,
 	bool res = true;
 
 	pixman_region32_init(&combined_region);
-	pixman_region32_union(&combined_region,
-			      &ev->transform.boundingbox,
-			      region);
-	extents = pixman_region32_extents(&combined_region);
 
-	assert(!ev->transform.dirty);
+	pixman_region32_union(&combined_region,
+			      background_region,
+			      weston_paint_node_get_opaque_region (pnode));
+
+	/* Check for holes in the region */
+	if (pixman_region32_n_rects (&combined_region) != 1) {
+		pixman_region32_fini(&combined_region);
+		return false;
+	}
+
+	extents = pixman_region32_extents(&combined_region);
 
 	if (extents->x1 != (int32_t)output->pos.c.x ||
 	    extents->y1 != (int32_t)output->pos.c.y ||
@@ -527,7 +533,7 @@ drm_output_find_plane_for_view(struct drm_output_state *state,
 			       struct weston_paint_node *pnode,
 			       enum drm_output_propose_state_mode mode,
 			       struct drm_plane_state *scanout_state,
-			       pixman_region32_t *background_region,
+			       const pixman_region32_t *background_region,
 			       uint64_t current_lowest_zpos_overlay,
 			       uint64_t current_lowest_zpos_underlay,
 			       bool need_underlay)
@@ -546,7 +552,7 @@ drm_output_find_plane_for_view(struct drm_output_state *state,
 	                               current_lowest_zpos_underlay :
 	                               current_lowest_zpos_overlay;
 
-	bool view_matches_entire_output, scanout_has_view_assigned;
+	bool use_scanout_plane = false;
 	uint32_t possible_plane_mask = 0;
 	uint32_t fb_failure_reasons = 0;
 	bool any_candidate_picked = false;
@@ -614,13 +620,22 @@ drm_output_find_plane_for_view(struct drm_output_state *state,
 		}
 	}
 
-	view_matches_entire_output =
-		view_with_region_matches_output_entirely(ev,
-							 background_region,
-							 &output->base);
-	scanout_has_view_assigned =
-		drm_output_check_plane_has_view_assigned(output->scanout_plane,
-							 state);
+	/* if the view covers the whole output, put it in the scanout plane,
+	 * not overlay */
+	if (mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY) {
+		bool scanout_has_view_assigned;
+		bool view_matches_entire_output;
+
+		scanout_has_view_assigned =
+			drm_output_check_plane_has_view_assigned(output->scanout_plane,
+								 state);
+		view_matches_entire_output =
+			view_with_region_matches_output_entirely(pnode,
+								 background_region,
+								 &output->base);
+
+		use_scanout_plane = !scanout_has_view_assigned && view_matches_entire_output;
+	}
 
 	/* assemble a list with possible candidates */
 	wl_list_for_each(plane, &device->plane_list, link) {
@@ -646,18 +661,12 @@ drm_output_find_plane_for_view(struct drm_output_state *state,
 		case WDRM_PLANE_TYPE_PRIMARY:
 			if (plane != output->scanout_plane)
 				continue;
-			if (mode != DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY)
-				continue;
-			if (!view_matches_entire_output)
+			if (!use_scanout_plane)
 				continue;
 			break;
 		case WDRM_PLANE_TYPE_OVERLAY:
 			assert(mode != DRM_OUTPUT_PROPOSE_STATE_RENDERER_AND_CURSOR);
-			/* if the view covers the whole output, put it in the
-			 * scanout plane, not overlay */
-			if (view_matches_entire_output &&
-			    pnode->is_fully_opaque &&
-			    !scanout_has_view_assigned)
+			if (use_scanout_plane)
 				continue;
 			/* for alpha views, avoid placing them on the HW planes that
 			 * are below the primary plane. */
@@ -792,6 +801,7 @@ is_paint_node_solid_opaque_black(struct weston_paint_node *pnode)
 static bool
 lower_solid_views_to_background_region(struct drm_output *output,
 				       struct wl_array *visible_pnodes,
+				       struct weston_paint_node **last_visible_pnode,
 				       pixman_region32_t *background_region)
 {
 	struct drm_device *device = output->device;
@@ -858,6 +868,7 @@ lower_solid_views_to_background_region(struct drm_output *output,
 		visible_pnode_new = wl_array_add(&visible_pnodes_new,
 						 sizeof(pnode));
 		*visible_pnode_new = pnode;
+		*last_visible_pnode = pnode;
 	}
 
 	wl_array_release(visible_pnodes);
@@ -895,10 +906,12 @@ drm_output_propose_state(struct weston_output *output_base,
 	struct drm_plane_state *scanout_state = NULL;
 
 	struct weston_paint_node **visible_pnode;
+	struct weston_paint_node *last_visible_pnode = NULL;
 	struct wl_array visible_pnodes;
 
 	pixman_region32_t renderer_region;
 	pixman_region32_t background_region;
+	pixman_region32_t obscured_region;
 
 	bool renderer_ok = (mode != DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY);
 	int ret;
@@ -958,7 +971,7 @@ drm_output_propose_state(struct weston_output *output_base,
 		/* assign the primary the lowest zpos value */
 		scanout_state->zpos = plane->zpos_min;
 		/* Set the initial lowest zpos used for the underlay plane
-		 * (asuming capable platform) to the that of the the primary
+		 * (assuming a capable platform) to the zpos of the primary
 		 * plane, matching the lowest possible value. As we parse views
 		 * from top to bottom we also need a start-up point for
 		 * underlays, below this initial lowest zpos value. */
@@ -1018,6 +1031,8 @@ drm_output_propose_state(struct weston_output *output_base,
 	 * covered by the renderer and underlay region. */
 	pixman_region32_init(&renderer_region);
 
+	pixman_region32_init(&obscured_region);
+
 	/* background_region contains the area that is covered by opaque
 	 * solid-black views. This area can be fully ignored in PLANES_ONLY mode
 	 * according to the DRM spec:
@@ -1037,6 +1052,7 @@ drm_output_propose_state(struct weston_output *output_base,
 	if (mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY &&
 	    !lower_solid_views_to_background_region(output,
 						    &visible_pnodes,
+						    &last_visible_pnode,
 						    &background_region))
 		goto err_region;
 
@@ -1116,18 +1132,39 @@ drm_output_propose_state(struct weston_output *output_base,
 
 		/* Now try to place it on a plane if we can. */
 		if (!pnode->try_view_on_plane_failure_reasons) {
+			pixman_region32_t obscured_or_background_region;
+
 			drm_debug(b, "\t\t\t[plane] started with zpos %"PRIu64"\n",
 				      need_underlay ? current_lowest_zpos_underlay :
 				      current_lowest_zpos_overlay);
+
+			pixman_region32_init(&obscured_or_background_region);
+			if (pnode == last_visible_pnode) {
+				pixman_region32_union(&obscured_or_background_region,
+						      &background_region,
+						      &obscured_region);
+				if (pixman_region32_not_empty (&obscured_or_background_region))
+					drm_debug(b, "\t\t\t[plane] adding background region\n");
+			}
+
 			ps = drm_output_find_plane_for_view(state, pnode, mode,
 							    scanout_state,
-							    &background_region,
+							    &obscured_or_background_region,
 							    current_lowest_zpos_overlay,
 							    current_lowest_zpos_underlay,
 							    need_underlay);
+
+			pixman_region32_fini(&obscured_or_background_region);
 		}
 
 		if (ps) {
+			if (mode == DRM_OUTPUT_PROPOSE_STATE_PLANES_ONLY &&
+			    ps->plane->type == WDRM_PLANE_TYPE_OVERLAY) {
+				pixman_region32_union(&obscured_region,
+						      &obscured_region,
+						      weston_paint_node_get_opaque_region (pnode));
+			}
+
 			if (drm_mixed_mode_check_underlay(mode, scanout_state, ps->zpos))
 				current_lowest_zpos_underlay = ps->zpos;
 			else
@@ -1160,6 +1197,7 @@ drm_output_propose_state(struct weston_output *output_base,
 	}
 
 	pixman_region32_fini(&renderer_region);
+	pixman_region32_fini(&obscured_region);
 	pixman_region32_fini(&background_region);
 	wl_array_release(&visible_pnodes);
 
@@ -1193,6 +1231,7 @@ drm_output_propose_state(struct weston_output *output_base,
 
 err_region:
 	pixman_region32_fini(&renderer_region);
+	pixman_region32_fini(&obscured_region);
 	pixman_region32_fini(&background_region);
 	wl_array_release(&visible_pnodes);
 err:

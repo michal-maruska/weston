@@ -475,6 +475,9 @@ drm_output_update_complete(struct drm_output *output, uint32_t flags,
 	if (output->pageflip_timer)
 		wl_event_source_timer_update(output->pageflip_timer, 0);
 
+	drm_debug(device->backend, "output %s update complete at %u.%06u s, flags %#x\n",
+		  output->base.name, sec, usec, flags);
+
 	wl_list_for_each(ps, &output->state_cur->plane_list, link)
 		ps->complete = true;
 
@@ -1876,7 +1879,8 @@ drm_output_pick_format_pixman(struct drm_output *output)
 	output->format = b->format;
 
 	if (b->has_underlay && (output->format->bits.a == 0)) {
-		weston_log("Disabling underlay planes: output '%s' with format %s does not have alpha channel,\n"
+		weston_log("Disabling underlay planes: "
+			   "output '%s' with format %s does not have alpha channel, "
 			   "which is required to support underlay planes.\n",
 			   output->base.name, output->format->drm_format_name);
 		b->has_underlay = false;
