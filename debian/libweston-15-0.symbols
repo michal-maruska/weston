@@ -416,6 +416,7 @@ libweston-15.so.0 libweston-15-0 #MINVER#
  weston_output_set_vrr_mode@Base 14.0.91
  weston_output_update_capture_info@Base 12.0.0
  weston_output_update_matrix@Base 12.0.0
+ weston_paint_node_get_opaque_region@Base 14.0.97
  weston_paint_node_move_to_plane@Base 13.0.0
  weston_parse_transform@Base 14.0.91
  weston_plane_failure_reasons_to_str@Base 14.0.91
