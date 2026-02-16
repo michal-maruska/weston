@@ -1,9 +1,9 @@
-weston (14.0.97-1) UNRELEASED; urgency=medium
+weston (14.0.97-1) experimental; urgency=medium
 
   * New upstream release (RC5 release for 15.0.0)
   * Update symbols file: add 1 new symbol
 
- -- Dylan Aïssi <daissi@debian.org>  Mon, 16 Feb 2026 09:44:34 +0100
+ -- Dylan Aïssi <daissi@debian.org>  Mon, 16 Feb 2026 09:52:00 +0100
 
 weston (14.0.95-1) experimental; urgency=medium
 
