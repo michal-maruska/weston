@@ -1,3 +1,9 @@
+weston (15.0.0-1) UNRELEASED; urgency=medium
+
+  * New upstream release
+
+ -- Dylan Aïssi <daissi@debian.org>  Thu, 19 Feb 2026 09:49:24 +0100
+
 weston (14.0.97-1) experimental; urgency=medium
 
   * New upstream release (RC5 release for 15.0.0)
