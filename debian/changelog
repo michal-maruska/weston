@@ -1,3 +1,17 @@
+weston (15.0.0-1-maruska) unstable; urgency=medium
+
+  [ Dylan Aïssi ]
+  * d/u/metadata: add reference for Weston 15
+
+  [ Michal Maruska ]
+  * call the new libinput_setup_fork()
+  * use my own xkb definition file.
+  * exploratory marks, comments
+  * needed header?
+  * careful to pick my keymap only if it exists
+
+ -- Michal Maruska <mmaruska@gmail.com>  Sat, 21 Feb 2026 09:08:01 +0100
+
 weston (15.0.0-1) unstable; urgency=medium
 
   * New upstream release
