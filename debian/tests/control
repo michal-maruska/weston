@@ -1,6 +1,7 @@
 # Upstream testsuite is not yet installable, see
 # https://gitlab.freedesktop.org/wayland/weston/-/issues/368
 Test-Command: debian/rules override_dh_auto_configure; dh_auto_build; dh_auto_test
+Features: test-name=build-and-test
 Depends: @builddeps@
 Restrictions: allow-stderr
 Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
@@ -9,6 +10,7 @@ Architecture: amd64 arm64 armel armhf i386 ppc64el riscv64
 # https://gitlab.freedesktop.org/wayland/weston/-/issues/739
 # but run them as flaky for now.
 Test-Command: debian/rules override_dh_auto_configure; dh_auto_build; dh_auto_test
+Features: test-name=build-and-test-flaky
 Depends: @builddeps@
 Restrictions: allow-stderr, flaky
 Architecture: !amd64 !arm64 !armel !armhf !i386 !ppc64el !riscv64
