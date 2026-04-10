@@ -2,6 +2,7 @@ weston (15.0.0-2) UNRELEASED; urgency=medium
 
   [ Dylan Aïssi ]
   * d/u/metadata: add reference for Weston 15
+  * Bump Standards-Version to 4.7.4
 
   [ Alessandro Astone ]
   * d/rules, d/tests: Re-use configure flags from debian/rules (LP: #2147650)
