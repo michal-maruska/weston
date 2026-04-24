@@ -4,6 +4,7 @@ weston (15.0.1-1) UNRELEASED; urgency=medium
   * d/u/signing-key.asc: concatenate multiple blocks into a single
       ASCII Armor block.
   * gbp.conf: add postimport
+  * Disable flaky output-damage tests with vulkan-render
 
  -- Dylan Aïssi <daissi@debian.org>  Fri, 24 Apr 2026 12:30:24 +0200
 

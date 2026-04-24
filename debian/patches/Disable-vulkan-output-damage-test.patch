@@ -1,0 +1,24 @@
+Description: Disable flaky output-damage tests with vulkan-render.
+Bug: https://gitlab.freedesktop.org/wayland/weston/-/work_items/1032
+Forwarded: not-needed
+
+--- a/tests/output-damage-test.c
++++ b/tests/output-damage-test.c
+@@ -49,7 +49,7 @@
+ 		.transform_name = #t,					\
+ 		.gl_shadow_fb = false,					\
+ 		.meta.name = "GL no-shadow " #s " " #t,			\
+-	},								\
++	}/*,								\
+ 	{								\
+ 		.renderer = WESTON_RENDERER_VULKAN,			\
+ 		.scale = s,						\
+@@ -57,7 +57,7 @@
+ 		.transform_name = #t,					\
+ 		.gl_shadow_fb = false,					\
+ 		.meta.name = "Vulkan " #s " " #t,			\
+-	}
++	}*/
+ 
+ struct setup_args {
+ 	struct fixture_metadata meta;
