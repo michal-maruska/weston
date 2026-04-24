@@ -719,9 +719,13 @@ drm_writeback_state_alloc(void)
 }
 
 static void
-drm_writeback_state_free(struct drm_writeback_state *state)
+drm_writeback_state_free(struct weston_compositor *c,
+			 struct drm_writeback_state *state)
 {
 	struct drm_fb **fb;
+
+	/* Capture task must be retired before freeing the state. */
+	weston_assert_ptr_null(c, state->ct);
 
 	if (state->out_fence_fd >= 0)
 		close(state->out_fence_fd);
@@ -737,6 +741,21 @@ drm_writeback_state_free(struct drm_writeback_state *state)
 	wl_array_release(&state->referenced_fbs);
 
 	free(state);
+}
+
+static void
+drm_writeback_state_ct_destroy_handler(struct wl_listener *listener, void *data)
+{
+	struct drm_writeback_state *state =
+		container_of(listener, struct drm_writeback_state,
+			     ct_destroy_listener);
+
+	/**
+	 * Capture task was retired, so drop it from the state. The state is
+	 * destroyed once the wb job completes.
+	 */
+	state->ct = NULL;
+	wl_list_remove(&state->ct_destroy_listener.link);
 }
 
 static void
@@ -820,10 +839,13 @@ drm_output_pick_writeback_capture_task(struct drm_output *output)
 	output->wb_state->state = DRM_OUTPUT_WB_SCREENSHOT_PREPARE_COMMIT;
 	output->wb_state->ct = ct;
 
+	output->wb_state->ct_destroy_listener.notify = drm_writeback_state_ct_destroy_handler;
+	weston_capture_task_add_destroy_listener(ct, &output->wb_state->ct_destroy_listener);
+
 	return;
 
 err_fb:
-	drm_writeback_state_free(output->wb_state);
+	free(output->wb_state);
 	output->wb_state = NULL;
 err:
 	weston_capture_task_retire_failed(ct, msg);
@@ -3412,11 +3434,21 @@ static void
 drm_writeback_success_screenshot(struct drm_writeback_state *state)
 {
 	struct drm_output *output = state->output;
-	struct weston_buffer *buffer =
-		weston_capture_task_get_buffer(state->ct);
+	struct weston_compositor *c = output->base.compositor;
+	struct weston_buffer *buffer;
 	int width, height;
 	int dst_stride, src_stride;
 	uint32_t *src, *dst;
+
+	/**
+	 * Capture task already retired, see
+	 * drm_writeback_state_ct_destroy_handler(). Here we destroy the wb
+	 * state.
+	 */
+	if (!state->ct)
+		goto destroy_state;
+
+	buffer = weston_capture_task_get_buffer(state->ct);
 
 	if (buffer->type == WESTON_BUFFER_SHM) {
 		src = state->fb->map;
@@ -3436,7 +3468,10 @@ drm_writeback_success_screenshot(struct drm_writeback_state *state)
 	}
 
 	weston_capture_task_retire_complete(state->ct);
-	drm_writeback_state_free(state);
+	state->ct = NULL;
+
+destroy_state:
+	drm_writeback_state_free(c, state);
 	output->wb_state = NULL;
 }
 
@@ -3445,9 +3480,21 @@ drm_writeback_fail_screenshot(struct drm_writeback_state *state,
 			      const char *err_msg)
 {
 	struct drm_output *output = state->output;
+	struct weston_compositor *c = output->base.compositor;
+
+	/**
+	 * Capture task already retired, see
+	 * drm_writeback_state_ct_destroy_handler(). Here we destroy the wb
+	 * state.
+	 */
+	if (!state->ct)
+		goto destroy_state;
 
 	weston_capture_task_retire_failed(state->ct, err_msg);
-	drm_writeback_state_free(state);
+	state->ct = NULL;
+
+destroy_state:
+	drm_writeback_state_free(c, state);
 	output->wb_state = NULL;
 }
 
