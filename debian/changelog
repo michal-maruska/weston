@@ -1,4 +1,4 @@
-weston (15.0.1-1) UNRELEASED; urgency=medium
+weston (15.0.1-1) unstable; urgency=medium
 
   * New upstream release
   * d/u/signing-key.asc: concatenate multiple blocks into a single
@@ -8,7 +8,7 @@ weston (15.0.1-1) UNRELEASED; urgency=medium
   * Update debian/copyright
   * salsa-ci: enable licenserecon
 
- -- Dylan Aïssi <daissi@debian.org>  Fri, 24 Apr 2026 12:30:24 +0200
+ -- Dylan Aïssi <daissi@debian.org>  Fri, 24 Apr 2026 15:13:51 +0200
 
 weston (15.0.0-2) unstable; urgency=medium
 
