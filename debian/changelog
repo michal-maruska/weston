@@ -5,6 +5,8 @@ weston (15.0.1-1) UNRELEASED; urgency=medium
       ASCII Armor block.
   * gbp.conf: add postimport
   * Disable flaky output-damage tests with vulkan-render
+  * Update debian/copyright
+  * salsa-ci: enable licenserecon
 
  -- Dylan Aïssi <daissi@debian.org>  Fri, 24 Apr 2026 12:30:24 +0200
 

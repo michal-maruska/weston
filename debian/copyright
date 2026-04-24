@@ -2,42 +2,81 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Source: https://wayland.freedesktop.org/
 
 Files: *
-Copyright: © 2016 Armin Krezović
-           © 2010-2012 Benjamin Franzke
-           © 2016 Benoit Gschwind
-           © 2013 BMW Car IT GmbH
-           © 2009 Chris Wilson
-           © 2011-2018 Collabora, Ltd.
-           © 2013 David Herrmann
-           © 2013-2016 DENSO CORPORATION
-           © 2015-2018 General Electric Company
-           © 2015-2016 Giulio Camuffo
-           © 2013 Hardening
-           © 2009-2013 Intel Corporation
-           © 2013-2014 Jason Ekstrand
-           © 2015 Jasper St. Pierre
-           © 2012 John Kåre Alsaker
-           © 2012-2013 Jonas Ådahl
-           © 1988-2004 Keith Packard and Bart Massey.
-           © 2008-2012 Kristian Høgsberg
-           © 2012 Martin Minarik
-           © 2016 NVIDIA Corporation
-           © 2012 Openismus GmbH
-           © 2014 Pekka Paalanen
-           © 2012 Philipp Brüschweiler
-           © 2013 Philip Withnall
-           © 2016 Quentin "Sardem FF7" Glidic
-           © 2012-2013 Raspberry Pi Foundation
-           © 2010-2015 Red Hat, Inc.
-           © 2013 Richard Hughes
-           © 2012 Rob Clark
-           © 2013 Sam Spilsbury
-           © 2015-2016 Samsung Electronics Co., Ltd
-           © 2012 Scott Moreau
-           © 2011 Tim Wiederhake
-           © 2008 Tungsten Graphics, Inc
-           © 2013 Vasily Khoruzhick
-License: X11
+Copyright: 2016 Armin Krezović
+           2010-2012 Benjamin Franzke
+           2016 Benoit Gschwind
+           2013 BMW Car IT GmbH
+           2009 Chris Wilson
+           2011-2018 Collabora, Ltd.
+           2013 David Herrmann
+           2013-2016 DENSO CORPORATION
+           2015-2018 General Electric Company
+           2015-2016 Giulio Camuffo
+           2013 Hardening
+           2009-2013 Intel Corporation
+           2013-2014 Jason Ekstrand
+           2015 Jasper St. Pierre
+           2012 John Kåre Alsaker
+           2012-2013 Jonas Ådahl
+           1988-2004 Keith Packard and Bart Massey.
+           2008-2012 Kristian Høgsberg
+           2012 Martin Minarik
+           2016 NVIDIA Corporation
+           2012 Openismus GmbH
+           2014 Pekka Paalanen
+           2012 Philipp Brüschweiler
+           2013 Philip Withnall
+           2016 Quentin "Sardem FF7" Glidic
+           2012-2013 Raspberry Pi Foundation
+           2010-2015 Red Hat, Inc.
+           2013 Richard Hughes
+           2012 Rob Clark
+           2013 Sam Spilsbury
+           2015-2016 Samsung Electronics Co., Ltd
+           2012 Scott Moreau
+           2011 Tim Wiederhake
+           2008 Tungsten Graphics, Inc
+           2013 Vasily Khoruzhick
+License: Expat
+
+Files: clients/tablet.c
+Copyright: 2014 Lyude
+License: HPND-sell-variant
+
+Files: data/*
+Copyright: 2007-2010 Novell, Inc.
+License: CC-BY-SA-3.0
+
+Files: data/terminal.png
+Copyright: 2002-2008 GNOME Project
+License: CC-BY-SA-3.0
+
+Files: shared/hash.*
+Copyright: 2009 Intel Corporation
+           1988-2004 Keith Packard and Bart Massey.
+License: Expat-NoAdvertising
+
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining a
+ copy of this software and associated documentation files (the "Software"),
+ to deal in the Software without restriction, including without limitation
+ the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ and/or sell copies of the Software, and to permit persons to whom the
+ Software is furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice (including the next
+ paragraph) shall be included in all copies or substantial portions of the
+ Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ DEALINGS IN THE SOFTWARE.
+
+License: HPND-sell-variant
  Permission to use, copy, modify, distribute, and sell this software and
  its documentation for any purpose is hereby granted without fee, provided
  that the above copyright notice appear in all copies and that both that
@@ -54,20 +93,9 @@ License: X11
  SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
  RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
  CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE
 
-Files: data/*
-Copyright: © 2007-2010 Novell, Inc.
-License: CC-BY-SA-3.0
-
-Files: data/terminal.png
-Copyright: @ 2002-2008 GNOME Project
-License: CC-BY-SA-3.0
-
-Files: shared/hash.*
-Copyright: © 2009 Intel Corporation
-           © 1988-2004 Keith Packard and Bart Massey.
-License: MIT
+License: Expat-NoAdvertising
  Permission is hereby granted, free of charge, to any person obtaining a
  copy of this software and associated documentation files (the "Software"),
  to deal in the Software without restriction, including without limitation
@@ -96,7 +124,6 @@ License: MIT
  Authors:
     Eric Anholt <eric@anholt.net>
     Keith Packard <keithp@keithp.com>
-
 
 License: CC-BY-SA-3.0
  THE WORK (AS DEFINED BELOW) IS PROVIDED UNDER THE TERMS OF THIS
