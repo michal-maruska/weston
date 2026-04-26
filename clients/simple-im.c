@@ -181,17 +181,20 @@ input_method_keyboard_keymap(void *data,
 	struct simple_im *keyboard = data;
 	char *map_str;
 
+	// what kind of format ?
 	if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
 		close(fd);
 		return;
 	}
 
+	// mmap ... what is the filename?
 	map_str = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
 	if (map_str == MAP_FAILED) {
 		close(fd);
 		return;
 	}
 
+	// mmc:
 	keyboard->keymap =
 		xkb_keymap_new_from_string(keyboard->xkb_context,
 					   map_str,
