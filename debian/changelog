@@ -1,3 +1,15 @@
+weston (15.0.1-1-maruska) unstable; urgency=medium
+
+  * call the new libinput_setup_fork()
+  * use my own xkb definition file.
+  * exploratory marks, comments
+  * needed header?
+  * careful to pick my keymap only if it exists
+  * ci: part of my organization, release = create debian package
+  * source is native!
+
+ -- Michal Maruska <mmaruska@gmail.com>  Mon, 27 Apr 2026 00:53:08 +0200
+
 weston (15.0.1-1) unstable; urgency=medium
 
   * New upstream release
