@@ -48,6 +48,8 @@
 static void
 drm_fb_destroy(struct drm_fb *fb)
 {
+	weston_assert_int_eq(fb->backend->compositor, fb->refcnt, 0);
+
 	/* TODO: do not leak the fb during shutdown.
 	 * When we are shutting down, the CRTC may be scanning out our fb. If we
 	 * destroy it, the CRTC may turn off. So leak that on purpose. What we
@@ -474,20 +476,17 @@ drm_fb_get_from_dmabuf_attributes(struct dmabuf_attributes *attributes,
 			}
 			fb->num_duped_fds++;
 		}
-
-		goto bo_import_skip;
+	} else {
+		fb->bo = gbm_bo_import(backend->gbm, GBM_BO_IMPORT_FD_MODIFIER,
+				       &import_mod, GBM_BO_USE_SCANOUT);
+		if (!fb->bo) {
+			if (try_view_on_plane_failure_reasons)
+				*try_view_on_plane_failure_reasons |=
+					FAILURE_REASONS_GBM_BO_IMPORT_FAILED;
+			goto err_free;
+		}
 	}
 
-	fb->bo = gbm_bo_import(backend->gbm, GBM_BO_IMPORT_FD_MODIFIER,
-			       &import_mod, GBM_BO_USE_SCANOUT);
-	if (!fb->bo) {
-		if (try_view_on_plane_failure_reasons)
-			*try_view_on_plane_failure_reasons |=
-				FAILURE_REASONS_GBM_BO_IMPORT_FAILED;
-		goto err_free;
-	}
-
-bo_import_skip:
 	fb->width = attributes->width;
 	fb->height = attributes->height;
 	fb->modifier = attributes->modifier;
@@ -536,7 +535,7 @@ bo_import_skip:
 	return fb;
 
 err_free:
-	drm_fb_destroy_dmabuf(fb);
+	drm_fb_unref(fb);
 	return NULL;
 }
 

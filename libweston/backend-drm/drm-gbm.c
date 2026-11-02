@@ -45,6 +45,7 @@
 #include "shared/weston-egl-ext.h"
 #include "linux-dmabuf.h"
 #include "linux-explicit-synchronization.h"
+#include "shared/fd-util.h"
 #include "shared/xalloc.h"
 
 /* When initializing EGL, if the preferred buffer format isn't available
@@ -751,12 +752,7 @@ drm_output_init_vulkan(struct drm_output *output, struct drm_backend *b)
 void
 drm_output_fini_egl(struct drm_output *output)
 {
-	struct drm_backend *b = output->backend;
-	const struct weston_renderer *renderer = b->compositor->renderer;
-
-	/* Destroying the GBM surface will destroy all our GBM buffers,
-	 * regardless of refcount. */
-	weston_assert_ptr_null(b->compositor, output->scanout_handle);
+	const struct weston_renderer *renderer = output->base.compositor->renderer;
 
 	renderer->gl->output_destroy(&output->base);
 	gbm_surface_destroy(output->gbm_surface);
@@ -767,10 +763,7 @@ drm_output_fini_egl(struct drm_output *output)
 void
 drm_output_fini_vulkan(struct drm_output *output)
 {
-	struct drm_backend *b = output->backend;
-	const struct weston_renderer *renderer = b->compositor->renderer;
-
-	weston_assert_ptr_null(b->compositor, output->scanout_handle);
+	const struct weston_renderer *renderer = output->base.compositor->renderer;
 
 	for (unsigned int i = 0; i < ARRAY_LENGTH(output->renderbuffer); i++)
 		renderer->destroy_renderbuffer(output->renderbuffer[i]);
@@ -821,6 +814,7 @@ drm_output_render_vulkan(struct drm_output_state *state, pixman_region32_t *dama
 	struct drm_device *device = output->device;
 	struct linux_dmabuf_memory *dmabuf;
 	struct drm_fb *ret;
+	int fence_fd;
 
 	renderer->repaint_output(&output->base, damage,
 				 output->renderbuffer[output->current_image]);
@@ -840,12 +834,13 @@ drm_output_render_vulkan(struct drm_output_state *state, pixman_region32_t *dama
 		return NULL;
 	}
 
-	pstate->in_fence_fd = renderer->vulkan->create_fence_fd(&output->base);
-	if (pstate->in_fence_fd < 1) {
+	fence_fd = renderer->vulkan->create_fence_fd(&output->base);
+	if (fence_fd < 0) {
 		weston_log("failed to get fence fd from rendering\n");
 		drm_fb_unref(ret);
 		return NULL;
 	}
+	fd_update(&pstate->in_fence_fd, fence_fd);
 
 	output->current_image = (output->current_image + 1) % ARRAY_LENGTH(output->renderbuffer);
 

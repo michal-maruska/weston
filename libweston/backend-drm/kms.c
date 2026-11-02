@@ -1863,9 +1863,13 @@ drm_output_apply_state_atomic(struct drm_output_state *state,
 		ret |= crtc_add_prop_zero_ok(req, crtc, WDRM_CRTC_VRR_ENABLED,
 					     wdrm_vrr_enabled_from_output(output));
 
-		ret |= crtc_add_prop_zero_ok(req, crtc,
+		/* Not crtc_add_prop_zero_ok(): opaque black is not zero, so on a
+		 * CRTC without the property that helper would fall through to
+		 * crtc_add_prop() and fail the whole commit. */
+		if (drm_crtc_supports_background_color(crtc))
+			ret |= crtc_add_prop(req, crtc,
 					     WDRM_CRTC_BACKGROUND_COLOR,
-					     crtc->background_color);
+					     state->background_color);
 
 		/* No need for the DPMS property, since it is implicit in
 		 * routing and CRTC activity. */
@@ -2160,8 +2164,11 @@ drm_pending_state_apply_atomic(struct drm_pending_state *pending_state,
 			continue;
 
 		if (output_state->output->connector_color_format !=
-		    wdrm_color_format_from_output(&output_state->output->base))
+		    wdrm_color_format_from_output(&output_state->output->base)) {
 			weston_assert_true(b->compositor, output_state->output->base.enabled);
+			output_state->output->connector_color_format =
+				wdrm_color_format_from_output(&output_state->output->base);
+		}
 
 		if (mode == DRM_STATE_APPLY_SYNC)
 			assert(output_state->dpms == WESTON_DPMS_OFF);

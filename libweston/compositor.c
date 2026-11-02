@@ -405,7 +405,8 @@ paint_node_update_early(struct weston_paint_node *pnode)
 	pnode->status &= ~(WESTON_PAINT_NODE_VIEW_DIRTY | \
 			   WESTON_PAINT_NODE_OUTPUT_DIRTY |
 			   WESTON_PAINT_NODE_BUFFER_DIRTY |
-			   WESTON_PAINT_NODE_BUFFER_PARAMS_DIRTY);
+			   WESTON_PAINT_NODE_BUFFER_PARAMS_DIRTY |
+			   WESTON_PAINT_NODE_RATE_DIRTY);
 }
 
 /* This is for validating a paint node after early update, assign planes,
@@ -2923,9 +2924,6 @@ weston_surface_unref(struct weston_surface *surface)
 		weston_pointer_constraint_destroy(constraint);
 
 	fd_clear(&surface->acquire_fence_fd);
-
-	if (surface->tear_control)
-		surface->tear_control->surface = NULL;
 
 	weston_color_profile_unref(surface->color_profile);
 	weston_color_profile_unref(surface->preferred_color_profile);
@@ -6855,6 +6853,7 @@ weston_output_attach_head(struct weston_output *output,
 	wl_list_insert(output->head_list.prev, &head->output_link);
 
 	weston_output_compute_protection(output);
+	weston_output_update_color_format(output);
 
 	if (output->enabled) {
 		weston_head_add_global(head);
@@ -6897,6 +6896,8 @@ weston_head_detach(struct weston_head *head)
 
 	if (output->detach_head)
 		output->detach_head(output, head);
+
+	weston_output_update_color_format(output);
 
 	if (output->enabled) {
 		weston_head_remove_global(head);
@@ -7246,6 +7247,8 @@ weston_head_set_supported_color_format_mask(struct weston_head *head,
 		return;
 
 	head->supported_color_format_mask = color_format_mask;
+	if (head->output)
+		weston_output_update_color_format(head->output);
 
 	weston_head_set_device_changed(head);
 }
@@ -8543,6 +8546,7 @@ weston_output_init(struct weston_output *output,
 	output->enabled = false;
 	output->eotf_mode = WESTON_EOTF_MODE_SDR;
 	output->colorimetry_mode = WESTON_COLORIMETRY_MODE_DEFAULT;
+	output->preferred_color_format = WESTON_COLOR_FORMAT_AUTO;
 	output->color_format = WESTON_COLOR_FORMAT_AUTO;
 	output->desired_protection = WESTON_HDCP_DISABLE;
 	output->allow_protection = true;
@@ -9191,11 +9195,40 @@ weston_output_set_vrr_mode(struct weston_output *output,
 	return 0;
 }
 
+/** Update active color_format for output
+ *
+ * If the preferred format is supported by the current heads, use it.
+ * Otherwise fallback to WESTON_COLOR_FORMAT_AUTO.
+ *
+ * \ingroup output
+ * \sa weston_output_set_preferred_color_format
+ */
 WL_EXPORT void
-weston_output_set_color_format(struct weston_output *output,
-			       enum weston_color_format color_format)
+weston_output_update_color_format(struct weston_output *output)
 {
-	output->color_format = color_format;
+	uint32_t supported = weston_output_get_supported_color_formats(output);
+
+	if (supported & output->preferred_color_format)
+		output->color_format = output->preferred_color_format;
+	else
+		output->color_format = WESTON_COLOR_FORMAT_AUTO;
+}
+
+/** Update preferred color_format for output
+ *
+ * It may also update the current active output color_format, and the final
+ * value depends wether the newest preferred format is supported by current
+ * heads.
+ *
+ * \ingroup output
+ * \sa weston_output_update_color_format
+ */
+WL_EXPORT void
+weston_output_set_preferred_color_format(struct weston_output *output,
+					 enum weston_color_format color_format)
+{
+	output->preferred_color_format = color_format;
+	weston_output_update_color_format(output);
 }
 
 WL_EXPORT uint32_t
@@ -9665,15 +9698,37 @@ compositor_bind(struct wl_client *client,
 }
 
 static void
+tearing_control_base_surface_destroyed(struct wl_listener *listener, void *data)
+{
+	struct weston_surface *surface = data;
+	struct weston_compositor *wc = surface->compositor;
+	struct weston_tearing_control *tc =
+		wl_container_of(listener, tc, surface_destroy_listener);
+
+	weston_assert_ptr_eq(wc, surface, tc->surface);
+
+	/* Surface destroyed, so tearing control becomes inert */
+	tc->surface = NULL;
+	wl_list_remove(&tc->surface_destroy_listener.link);
+}
+
+static void
 set_presentation_hint(struct wl_client *client, struct wl_resource *resource, uint32_t hint)
 {
 	struct weston_tearing_control *tc = wl_resource_get_user_data(resource);
 	struct weston_surface *surf = tc->surface;
 
+	/* tearing-control is inert if the surface was destroyed */
+	if (!surf)
+		return;
+
 	if (hint == WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC)
-		surf->tear_control->may_tear = true;
+		surf->pending.may_tear = true;
 	else
-		surf->tear_control->may_tear = false;
+		surf->pending.may_tear = false;
+
+	if (surf->may_tear != surf->pending.may_tear)
+		surf->pending.status |= WESTON_SURFACE_DIRTY_RATE;
 }
 
 static void
@@ -9682,9 +9737,14 @@ destroy_tearing_control(struct wl_client *client, struct wl_resource *res)
 	struct weston_tearing_control *tc = wl_resource_get_user_data(res);
 	struct weston_surface *surf = tc->surface;
 
-	if (surf)
-		surf->tear_control = NULL;
+	if (!surf)
+		return;
 
+	surf->tearing_control = NULL;
+	if (surf->pending.may_tear) {
+		surf->pending.may_tear = false;
+		surf->pending.status |= WESTON_SURFACE_DIRTY_RATE;
+	}
 	wl_resource_destroy(res);
 }
 
@@ -9706,8 +9766,10 @@ free_tearing_control(struct wl_resource *res)
 	struct weston_tearing_control *tc = wl_resource_get_user_data(res);
 	struct weston_surface *surf = tc->surface;
 
-	if (surf)
-		surf->tear_control = NULL;
+	if (surf) {
+		surf->tearing_control = NULL;
+		wl_list_remove(&tc->surface_destroy_listener.link);
+	}
 
 	free(tc);
 }
@@ -9724,7 +9786,7 @@ get_tearing_control(struct wl_client *client,
 	uint32_t version;
 
 	surface = wl_resource_get_user_data(surface_resource);
-	if (surface->tear_control) {
+	if (surface->tearing_control) {
 		wl_resource_post_error(resource,
 				       WP_TEARING_CONTROL_MANAGER_V1_ERROR_TEARING_CONTROL_EXISTS,
 				       "Surface already has a tearing controller");
@@ -9741,9 +9803,11 @@ get_tearing_control(struct wl_client *client,
 	}
 
 	control = xzalloc(sizeof *control);
-	control->may_tear = false;
 	control->surface = surface;
-	surface->tear_control = control;
+	surface->tearing_control = control;
+	control->surface_destroy_listener.notify = tearing_control_base_surface_destroyed;
+	wl_signal_add(&surface->destroy_signal, &control->surface_destroy_listener);
+
 	wl_resource_set_implementation(ctl_res, &tearing_interface,
 				       control, free_tearing_control);
 }
@@ -10923,7 +10987,7 @@ weston_load_module(const char *name, const char *entrypoint,
 		weston_log("Module '%s' already loaded\n", path);
 	} else {
 		weston_log("Loading module '%s'\n", path);
-		module = dlopen(path, RTLD_NOW);
+		module = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
 		if (!module) {
 			weston_log("Failed to load module: %s\n", dlerror());
 			return NULL;
