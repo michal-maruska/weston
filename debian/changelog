@@ -2,6 +2,7 @@ weston (16.0.2-1) UNRELEASED; urgency=medium
 
   * New upstream release
   * Update symbols file
+  * d/u/metadata: add reference for Weston 16
 
  -- Dylan Aïssi <daissi@debian.org>  Mon, 02 Nov 2026 17:26:02 +0100
 

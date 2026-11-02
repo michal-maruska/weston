@@ -3,6 +3,10 @@ Bug-Submit: https://gitlab.freedesktop.org/wayland/weston/-/issues/new
 Repository: https://gitlab.freedesktop.org/wayland/weston.git
 Repository-Browse: https://gitlab.freedesktop.org/wayland/weston
 Reference:
+  - Title: "Weston 16: HDR-ready, improved debugging, and DRM backend features"
+    Author: Marius Vlad
+    Year: 2026
+    URL: https://www.collabora.com/news-and-blog/news-and-events/weston-16-hdr-ready-improved-debugging-and-drm-backend-features.html
   - Title: "Weston 15.0 is here: Lua shells, Vulkan rendering, and a smoother display stack"
     Author: Marius Vlad
     Year: 2026
