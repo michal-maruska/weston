@@ -34,6 +34,7 @@
 
 #include "colorops.h"
 #include "drm-internal.h"
+#include "shared/fd-util.h"
 #include "shared/weston-assert.h"
 #include "shared/weston-drm-fourcc.h"
 #include "shared/xalloc.h"
@@ -95,7 +96,7 @@ drm_plane_state_free(struct drm_plane_state *state, bool force)
 	wl_list_remove(&state->link);
 	wl_list_init(&state->link);
 	state->output_state = NULL;
-	state->in_fence_fd = -1;
+	fd_update(&state->in_fence_fd, -1);
 	state->zpos = DRM_PLANE_ZPOS_INVALID_PLANE;
 	state->alpha = DRM_PLANE_ALPHA_OPAQUE;
 	drm_color_pipeline_state_unref(state->pipeline_state);
@@ -331,6 +332,7 @@ drm_output_state_alloc(struct drm_output *output)
 	state->output = output;
 	state->dpms = WESTON_DPMS_OFF;
 	state->protection = WESTON_HDCP_DISABLE;
+	state->background_color = DRM_BACKGROUND_COLOR_OPAQUE_BLACK;
 	wl_list_init(&state->link);
 
 	wl_list_init(&state->plane_list);
