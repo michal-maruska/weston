@@ -46,6 +46,7 @@
 #include "shared/timespec-util.h"
 #include <libweston/libweston.h>
 #include <libweston/desktop.h>
+#include <xkbcommon/xkbcommon.h>
 #include "backend.h"
 #include "libweston-internal.h"
 #include "relative-pointer-unstable-v1-server-protocol.h"
@@ -2791,6 +2792,7 @@ notify_key(const struct weston_key_event *key_event)
 		grab = keyboard->grab;
 	}
 
+	// mmc:
 	grab->interface->key(grab, key_event);
 
 	if (keyboard->pending_keymap &&
@@ -4124,10 +4126,25 @@ weston_compositor_build_global_keymap(struct weston_compositor *ec)
 
 	if (ec->xkb_info != NULL)
 		return 0;
-
+	//mmc:
+#if 0
 	keymap = xkb_keymap_new_from_names(ec->xkb_context,
 					   &ec->xkb_names,
 					   0);
+#else
+	FILE *file = fopen("/usr/share/X11/xkb/keymap/xkb.mmc","r");
+	if (file != NULL) {
+	  keymap = xkb_keymap_new_from_file(ec->xkb_context,
+					    file,
+					    XKB_KEYMAP_FORMAT_TEXT_V1,
+					    XKB_KEYMAP_COMPILE_NO_FLAGS);
+	  fclose(file);
+	} else {
+	  keymap = xkb_keymap_new_from_names(ec->xkb_context,
+					     &ec->xkb_names,
+					     0);
+	}
+#endif
 	if (keymap == NULL) {
 		weston_log("failed to compile global XKB keymap\n");
 		weston_log("  tried rules %s, model %s, layout %s, variant %s, "
@@ -4161,6 +4178,7 @@ weston_seat_update_keymap(struct weston_seat *seat, struct xkb_keymap *keymap)
 		update_keymap(seat);
 }
 
+// NULL
 WL_EXPORT int
 weston_seat_init_keyboard(struct weston_seat *seat, struct xkb_keymap *keymap)
 {
@@ -4184,6 +4202,7 @@ weston_seat_init_keyboard(struct weston_seat *seat, struct xkb_keymap *keymap)
 		if (keyboard->xkb_info == NULL)
 			goto err;
 	} else {
+	  // mmc:
 		if (weston_compositor_build_global_keymap(seat->compositor) < 0)
 			goto err;
 		keyboard->xkb_info = seat->compositor->xkb_info;
