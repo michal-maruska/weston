@@ -1,159 +1,180 @@
-Weston
-======
+# Weston with libinput key-forking (experimental)
 
-![screenshot of skeletal Weston desktop](doc/wayland-screenshot.jpg)
+This is an **experimental fork of Weston** whose only purpose is to make the
+patched libinput "forking" plugin usable inside a Weston session. It is not a
+general-purpose Weston fork and it is not meant for production.
 
-Weston is a Wayland compositor designed for correctness, reliability,
-predictability, and performance.
+The goal is simple: use my normal keyboard setup (my own XKB keymap plus the
+forking plugin) in a Weston session, so that writing in `weston-terminal`
+feels the same as in my usual Xorg session.
 
-Out of the box, Weston provides a very basic desktop, or a full-featured
-environment for non-desktop uses such as automotive, embedded, in-flight,
-industrial, kiosks, set-top boxes and TVs.
+Upstream Weston documentation: <https://wayland.pages.freedesktop.org/weston/>
 
-It also provides a library called [libweston](#libweston) which allows
-users to build their own custom full-featured environments on top of
-Weston's core.
+## Components
 
+| Component | Repository | Role |
+| --- | --- | --- |
+| Patched libinput | <https://github.com/Michal-Maruska/libinput> (branch `mmc`) | adds `libinput_setup_fork()`, `libinput_register_fork()`, `libinput_fork_services` and the keyboard-event hook |
+| Fork plugin | <https://github.com/michal-maruska/fork-plugin-core> (`libinput/`) | implements the forking state machine and builds `fork.so` |
+| This Weston fork | this repository | calls `libinput_setup_fork()` and optionally loads a custom XKB keymap |
 
-Building Weston
-===============
+## What is different from upstream Weston
 
-Weston is built using [Meson](https://mesonbuild.com/). Weston often depends
-on the current release versions of
-[Wayland](https://gitlab.freedesktop.org/wayland/wayland) and
-[wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols).
+Only two changes are functional; the rest is comments, packaging metadata and
+CI.
 
-If necessary, the latest Meson can be installed as a user with:
+- `libweston/libinput-seat.c`: after creating the libinput context and setting
+  up its log handler, Weston calls the new patched-libinput API:
 
-	$ pip3 install --user meson
+  ```c
+  libinput_setup_fork(input->libinput);
+  ```
 
-Weston's Meson build does not do autodetection and it defaults to all
-features enabled, which means you likely hit missing dependencies on the first
-try. If a dependency is avoidable through a build option, the error message
-should tell you what option can be used to avoid it. You may need to disable
-several features if you want to avoid certain dependencies.
+  This is the point where libinput `dlopen()`s `fork.so` and invokes its
+  `fork_init()` entry point.
 
-	$ git clone https://gitlab.freedesktop.org/wayland/weston.git
-	$ cd weston
-	$ meson build/ --prefix=...
-	$ ninja -C build/ install
-	$ cd ..
+- `libweston/input.c`: when building the global keymap, Weston first tries
+  `/usr/share/X11/xkb/keymap/xkb.mmc` with `xkb_keymap_new_from_file()`. If the
+  file does not exist, it falls back to the normal RMLVO keymap
+  (`xkb_keymap_new_from_names()`).
 
-The `meson` command populates the build directory. This step can
-fail due to missing dependencies. Any build options you want can be added on
-that line, e.g. `meson build/ --prefix=... -Ddemo-clients=false`. All the build
-options can be found in the file [meson_options.txt](meson_options.txt).
+Everything else in the diff is exploratory comments, a `debian/changelog`
+entry, the switch to `3.0 (native)` source format, and a GitHub workflow that
+builds Debian packages.
 
-Once the build directory has been successfully populated, you can inspect the
-configuration with `meson configure build/`. If you need to change an
-option, you can do e.g. `meson configure build/ -Ddemo-clients=false`.
+## How the event flow works
 
-Every push to the Weston master repository and its forks is built using GitLab
-CI. [Reading the configuration](.gitlab-ci.yml) may provide a useful example of
-how to build and install Weston.
+```text
+keyboard device
+  -> libinput keyboard_notify_key()
+     -> is a fork plugin registered?
+        yes -> plugin.accept_event()
+               -> forking machine decides
+                  -> services->rewrite(event, new_keycode)
+                  -> services->post_event(...)
+        no  -> post_device_event() as usual
+  -> Weston input handling
+  -> focused client (e.g. weston-terminal)
+```
 
-More [detailed documentation on building Weston](https://wayland.freedesktop.org/building.html)
-is available on the Wayland site. There are also more details on
-[how to run and write tests](https://wayland.freedesktop.org/testing.html).
+The plugin is loaded from `LIBINPUT_MODULE_PATH` (default
+`/usr/lib/libinput/modules/`). Its `fork_init(struct libinput_fork_services *)`
+registers callbacks with `libinput_register_fork()`. The services provide
+`rewrite()` for changing a keycode, `post_event()` for delivering the event,
+and `log()` / `vlog()`.
 
-For building the documentation see [documentation](#documentation).
+## Minimum test
 
+This is the shortest path to verify that libinput loads the plugin and that key
+presses are rewritten.
 
-Running Weston
-==============
+### 1. Build and install the patched libinput
 
-Once Weston is installed, most users can simply run it by typing `weston`. This
-will launch Weston inside whatever environment you launch it from: when launched
-from a text console, it will take over that console. When launched from inside
-an existing Wayland or X11 session, it will start a 'nested' instance of Weston
-inside a window in that session.
+```sh
+sudo apt install build-essential meson ninja-build pkg-config \
+  libudev-dev libevdev-dev libmtdev-dev libwacom-dev
 
-By default, Weston will start with a skeletal desktop-like environment called
-`desktop-shell`. Other shells are available; for example, to load the `kiosk`
-shell designed for single-application environments, you can start with:
+git clone https://github.com/Michal-Maruska/libinput.git
+cd libinput
+git checkout mmc
+meson setup build --prefix=/usr -Dtests=false
+ninja -C build
+sudo ninja -C build install
+sudo ldconfig
+```
 
-    $ weston --shell=kiosk
+### 2. Build and install the forking plugin
 
-Help is available by running `weston --help`, or `man weston`, which will list
-the available configuration options and display backends. It can also be
-configured through a file on disk; more information on this can be found through
-`man weston.ini`.
+```sh
+sudo apt install cmake g++ libinput-dev
 
-A small suite of example or demo clients are also provided: though they can be
-useful in themselves, their main purpose is to be an example or test case for
-others building compositors or clients.
+git clone https://github.com/michal-maruska/fork-plugin-core.git
+cd fork-plugin-core
 
+cmake -S libinput -B build-libinput -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DFETCHCONTENT_SOURCE_DIR_FORKING_MACHINE="$PWD"
 
-Using libweston
-===============
+cmake --build build-libinput
+sudo cmake --install build-libinput
+```
 
-libweston is designed to allow users to use Weston's core - its client support,
-backends and renderers - whilst implementing their own user interface, policy,
-configuration, and lifecycle. If you would like to implement your own window
-manager or desktop environment, we recommend building your project using the
-libweston API.
+This installs `/usr/lib/libinput/modules/fork.so`.
 
-Building and installing Weston will also install libweston's shared library
-and development headers. libweston is both API-compatible and ABI-compatible
-within a single stable release. It is parallel-installable, so multiple stable
-releases can be installed and used side by side.
+The sample plugin in `libinput/fork-plugin.cpp` has hardcoded `configure_key()`
+calls tailored to the author's custom keymap. For the smallest possible
+rewrite test, replace that block with a single mapping, for example Space to
+LeftCtrl:
 
-Documentation for libweston's API can be found within the source (see the
-[documentation](#documentation) section), and also on
-[Weston's online documentation](https://wayland.pages.freedesktop.org/weston/)
-for the current stable release.
+```c
+forking_machine->configure_key(fork_configure_key_fork,
+                               57 /* KEY_SPACE */,
+                               29 /* KEY_LEFTCTRL */,
+                               1);
+```
 
+Then rebuild and reinstall `fork.so`.
 
-Reporting issues and contributing
-=================================
+### 3. Build and install this Weston
 
-Weston's development is
-[hosted on freedesktop.org GitLab](https://gitlab.freedesktop.org/wayland/weston/).
-Please also see [the contributing document](CONTRIBUTING.md), which details how
-to make code or non-technical contributions to Weston.
+```sh
+meson setup build --prefix=/usr
+ninja -C build
+sudo ninja -C build install
+```
 
-Weston and libweston are not suitable for severely memory-constrained environments
-where the compositor is expected to continue running even in the face of
-trivial memory allocations failing. If standard functions like `malloc()`
-fail for small allocations,
-[you can expect libweston to abort](https://gitlab.freedesktop.org/wayland/weston/-/issues/631).
-This is only likely to occur if you have disabled your OS's 'overcommit'
-functionality, and not in common cases.
+Alternatively, build the Debian packages from this tree with the usual Debian
+tooling.
 
+### 4. Run Weston on the DRM/udev backend
 
-Documentation
-=============
+libinput is used by Weston's DRM (udev) backend. A nested Weston using the
+Wayland or X11 backend does **not** exercise this code path.
 
-To read the Weston documentation online, head over to
-[the Weston website](https://wayland.pages.freedesktop.org/weston/).
+From a free VT, with your display manager stopped:
 
-For documenting weston we use [sphinx](http://www.sphinx-doc.org/en/master/)
-together with [breathe](https://breathe.readthedocs.io/en/latest/) to process
-and augment code documentation from Doxygen. You should be able to install
-both sphinx and the breathe extension using pip3 command, or your package
-manager. Doxygen should be available using your distribution package manager.
+```sh
+WESTON_LIBINPUT_LOG_PRIORITY=debug weston --backend=drm --tty=2
+```
 
-Once those are set up, run `meson` with `-Ddoc=true` option in order to enable
-building the documentation. Installation will place the documentation in the
-prefix's path under datadir (i.e., `share/doc`).
+The log should show the plugin being loaded:
 
-Adding and improving documentation
-----------------------------------
+```text
+trying to open fork
+Loading module '/usr/lib/libinput/modules/fork.so'
+trying to invoke fork_init
+call fork_init
+hello from C++
+```
 
-For re-generating the documentation a special `docs` target has been added.
-Although first time you build (and subsequently install) weston, you'll see the
-documentation being built, updates to the spinx documentation files or to the
-source files will only be updated when using `docs` target!
+If the module lives somewhere else, set
+`LIBINPUT_MODULE_PATH=/path/to/modules`.
 
-Example:
+### 5. Verify key rewriting
 
-~~~~
-$ ninja install # generates and installs the documentation
-# time passes, hack hack, add doc in sources or rST files
-$ ninja install # not sufficient, docs will not be updated
-$ ninja docs && ninja install # run 'docs' then install
-~~~~
+Start `weston-terminal`. With the minimal Space-to-LeftCtrl mapping above:
 
-Improving/adding documentation can be done by modifying rST files under
-`doc/sphinx/` directory or by modifying the source code using doxygen
-directives.
+- tap Space: a normal space is typed;
+- hold Space and press `C`: the event is rewritten to Ctrl+C, for example it
+  interrupts `sleep 100`.
+
+## Custom XKB keymap
+
+Weston normally only accepts RMLVO names. This fork additionally accepts a
+complete keymap file at:
+
+```text
+/usr/share/X11/xkb/keymap/xkb.mmc
+```
+
+That is what makes the session feel like home: the forking plugin rewrites
+keycodes, and the custom XKB keymap gives those keycodes the intended
+modifier behaviour. Without the file, Weston falls back to the normal keymap.
+
+## Notes
+
+- Rebuild `fork.so` after changing the patched libinput, so both use compatible
+  headers.
+- The sample plugin enables verbose debugging with `set_debug(1)`. Set it to
+  `0` for normal use.
+- More background is in `porting-to-weston.md` in this tree.
