@@ -1,3 +1,16 @@
+weston (16.0.2-1-maruska2) unstable; urgency=medium
+
+  * call the new libinput_setup_fork()
+  * ci: part of my organization, release = create debian package
+  * source is native!
+  * ci: unstable tags, and default apt_repo
+  * ci: build for arm64, for specific ref
+  * use my own xkb definition file.
+  * exploratory marks, comments
+  * Change the README to explain the purpose of this fork
+
+ -- Michal Maruska <mmaruska@gmail.com>  Thu, 26 Nov 2026 10:44:32 +0100
+
 weston (16.0.2-1) unstable; urgency=medium
 
   * New upstream release
